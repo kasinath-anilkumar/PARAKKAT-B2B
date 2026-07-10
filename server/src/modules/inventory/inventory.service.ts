@@ -1,4 +1,4 @@
-import type { ActorRole, BookingState, ChannelPolicyKind } from '@prisma/client';
+import type { ActorRole, ChannelPolicyKind } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import type { RoomTypeAvailability } from '../../lib/axisrooms';
 import { ApiError } from '../../utils/apiError';
