@@ -1,8 +1,10 @@
+import crypto from 'node:crypto';
 import type { Booking } from '@prisma/client';
 import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { getAxisRooms } from '../../lib/axisrooms';
 import { broadcast } from '../../lib/realtime';
+import { logger } from '../../lib/logger';
 import { ApiError } from '../../utils/apiError';
 import { recordAuditLogSafe } from '../audit/audit.service';
 import {
@@ -11,8 +13,13 @@ import {
   getOutstanding,
   recordBookingObligation,
 } from '../finance/finance.service';
+import { notify, type EntityRef } from '../notifications/notification.service';
+import type { NotificationPayload } from '../notifications/templates';
 import { evaluateCreditGate } from './creditGate';
-import { computeAgencyPrice, nightsBetween } from './pricing';
+import { nightsBetween } from './pricing';
+import { priceRoom } from '../pricing/pricing.service';
+import { assertBookable } from '../inventory/inventory.service';
+import { Prisma, type ActorRole, type RatePlanCode } from '@prisma/client';
 
 export interface AgentActor {
   userId: string;
@@ -25,6 +32,21 @@ export interface CreateBookingInput {
   checkIn: string; // YYYY-MM-DD
   checkOut: string;
   guests: number;
+  plan?: RatePlanCode; // v3 §2 — defaults to EP
+  adults?: number; // defaults to guests
+  children?: number;
+  childAges?: number[]; // v3 §2.2 — drives age-band child pricing
+  extraBeds?: number;
+  // v3 §8 — guest data (full ID is minimised out; only last-4 is retained).
+  guest?: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    specialRequests?: string;
+    idType?: string;
+    idNumber?: string;
+    roomingList?: string[];
+  };
 }
 
 /** No agency transacts before Active (§7); a suspended agency is blocked. */
@@ -45,72 +67,239 @@ async function getCurrentConfigOrThrow(agencyId: string) {
   return config;
 }
 
-/** Pushes the reservation to AxisRooms and marks the booking COMMITTED (idempotent on correlationId). */
+/**
+ * Pushes the reservation to AxisRooms and marks the booking COMMITTED
+ * (idempotent on correlationId). v3 §5.2 — a push failure does NOT throw: the
+ * booking is parked in COMMIT_FAILED and queued for automatic rebook, so a
+ * payment already collected is never lost. Returns the COMMITTED or COMMIT_FAILED
+ * booking; callers must check `state` before recording obligations / notifying.
+ */
 async function commitToAxisRooms(booking: Booking): Promise<Booking> {
   const axis = getAxisRooms();
-  if (!(await axis.healthCheck())) {
-    throw ApiError.serviceUnavailable('AxisRooms is unavailable — booking cannot be committed right now');
+  try {
+    if (!(await axis.healthCheck())) throw new Error('AxisRooms health check failed');
+    const { axisRoomsRef } = await axis.createReservation({
+      correlationId: booking.correlationId,
+      resortId: booking.resortId,
+      roomTypeId: booking.roomTypeId,
+      checkIn: booking.checkIn.toISOString().slice(0, 10),
+      checkOut: booking.checkOut.toISOString().slice(0, 10),
+      guests: booking.guests,
+    });
+    const committed = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { state: 'COMMITTED', axisRoomsRef, committedAt: new Date() },
+    });
+    await recordAuditLogSafe({
+      entityType: 'Booking',
+      entityId: booking.id,
+      event: 'BOOKING_COMMITTED',
+      actorId: null,
+      actorRole: 'SYSTEM',
+      after: { axisRoomsRef, correlationId: booking.correlationId },
+    });
+    return committed;
+  } catch (err) {
+    return handleCommitFailure(booking, err);
   }
-  const { axisRoomsRef } = await axis.createReservation({
-    correlationId: booking.correlationId,
-    resortId: booking.resortId,
-    roomTypeId: booking.roomTypeId,
-    checkIn: booking.checkIn.toISOString().slice(0, 10),
-    checkOut: booking.checkOut.toISOString().slice(0, 10),
-    guests: booking.guests,
-  });
-  const committed = await prisma.booking.update({
-    where: { id: booking.id },
-    data: { state: 'COMMITTED', axisRoomsRef, committedAt: new Date() },
+}
+
+/**
+ * v3 §5.2 — records/advances a rebook task after a failed AxisRooms push. Moves
+ * the booking to COMMIT_FAILED, increments attempts, and parks it as ABANDONED
+ * once the retry ceiling is hit (manual admin resolution). Funds stay held.
+ */
+async function handleCommitFailure(booking: Booking, err: unknown): Promise<Booking> {
+  const message = err instanceof Error ? err.message : String(err);
+  const existing = await prisma.rebookTask.findUnique({ where: { bookingId: booking.id } });
+  const attempts = (existing?.attempts ?? 0) + 1;
+  const abandoned = attempts >= env.REBOOK_MAX_ATTEMPTS;
+
+  const failed = await prisma.booking.update({ where: { id: booking.id }, data: { state: 'COMMIT_FAILED' } });
+  await prisma.rebookTask.upsert({
+    where: { bookingId: booking.id },
+    create: { bookingId: booking.id, attempts, lastError: message, status: abandoned ? 'ABANDONED' : 'PENDING' },
+    update: { attempts, lastError: message, status: abandoned ? 'ABANDONED' : 'PENDING', resolvedAt: null },
   });
   await recordAuditLogSafe({
     entityType: 'Booking',
     entityId: booking.id,
-    event: 'BOOKING_COMMITTED',
+    event: abandoned ? 'BOOKING_COMMIT_ABANDONED' : 'BOOKING_COMMIT_FAILED',
     actorId: null,
     actorRole: 'SYSTEM',
-    after: { axisRoomsRef, correlationId: booking.correlationId },
+    after: { error: message, attempts },
   });
+  logger.error('AxisRooms commit failed — booking queued for rebook', {
+    bookingId: booking.id,
+    correlationId: booking.correlationId,
+    attempts,
+    abandoned,
+    error: message,
+  });
+  await notifyAgency(
+    booking.agencyId,
+    abandoned
+      ? { event: 'BOOKING_CONFIRMATION_FAILED', resortName: booking.resortName }
+      : { event: 'BOOKING_PENDING_CONFIRMATION', resortName: booking.resortName },
+    { entityType: 'Booking', entityId: booking.id },
+  );
+  broadcast(['bookings'], { agencyId: booking.agencyId });
+  return failed;
+}
+
+/** v3 §5.2 — finalise a successful (re)commit: close the task, record any deferred
+ *  credit obligation, and send the confirmation the failed attempt withheld. */
+async function onRebookResolved(booking: Booking): Promise<void> {
+  await prisma.rebookTask.update({
+    where: { bookingId: booking.id },
+    data: { status: 'RESOLVED', resolvedAt: new Date(), lastError: null },
+  });
+  if (booking.paymentMode === 'CREDIT') {
+    const invoice = await prisma.invoice.findUnique({ where: { bookingId: booking.id } });
+    if (!invoice) {
+      const config = await prisma.commercialConfiguration.findFirst({ where: { agencyId: booking.agencyId, isCurrent: true } });
+      await recordBookingObligation(booking, config?.paymentTerms ?? 'Net 15');
+    }
+  }
+  await notifyAgency(
+    booking.agencyId,
+    { event: 'BOOKING_CONFIRMED', resortName: booking.resortName, rooms: 1, checkIn: booking.checkIn.toISOString() },
+    { entityType: 'Booking', entityId: booking.id },
+  );
+  broadcast(['bookings', 'finance'], { agencyId: booking.agencyId });
+}
+
+/** v3 §5.2 — retry one queued booking (worker + manual admin retry share this). */
+async function attemptRebook(booking: Booking): Promise<Booking> {
+  const committed = await commitToAxisRooms(booking);
+  if (committed.state === 'COMMITTED') await onRebookResolved(committed);
   return committed;
 }
 
-export async function createBooking(input: CreateBookingInput, actor: AgentActor): Promise<Booking> {
-  await assertAgencyCanTransact(actor.agencyId);
-  const config = await getCurrentConfigOrThrow(actor.agencyId);
+/** v3 §5.2 — process the pending rebook queue (worker / admin-triggered). */
+export async function processRebookQueue(limit = 50): Promise<{ resolved: number; stillPending: number; abandoned: number }> {
+  const tasks = await prisma.rebookTask.findMany({
+    where: { status: 'PENDING' },
+    orderBy: { createdAt: 'asc' },
+    take: limit,
+  });
+  let resolved = 0;
+  let stillPending = 0;
+  let abandoned = 0;
+  for (const task of tasks) {
+    const booking = await prisma.booking.findUnique({ where: { id: task.bookingId } });
+    if (!booking || booking.state !== 'COMMIT_FAILED') continue; // stale (cancelled/resolved elsewhere)
+    const committed = await attemptRebook(booking);
+    if (committed.state === 'COMMITTED') resolved += 1;
+    else {
+      const after = await prisma.rebookTask.findUnique({ where: { bookingId: booking.id } });
+      if (after?.status === 'ABANDONED') abandoned += 1;
+      else stillPending += 1;
+    }
+  }
+  return { resolved, stillPending, abandoned };
+}
 
+/** v3 §5.2 — close an open rebook task (booking cancelled elsewhere; stop retrying). */
+async function closeRebookTask(bookingId: string): Promise<void> {
+  await prisma.rebookTask.updateMany({
+    where: { bookingId, status: { in: ['PENDING', 'ABANDONED'] } },
+    data: { status: 'RESOLVED', resolvedAt: new Date(), lastError: 'closed: booking cancelled' },
+  });
+}
+
+/** v3 §5.2 — admin: force a retry of a single commit-failed booking. */
+export async function retryRebook(bookingId: string): Promise<Booking> {
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) throw ApiError.notFound('Booking not found');
+  if (booking.state === 'COMMITTED') return booking;
+  if (booking.state !== 'COMMIT_FAILED') throw ApiError.conflict(`Booking is ${booking.state}, not awaiting rebook`);
+  return attemptRebook(booking);
+}
+
+/** v3 §5.2 — admin: the open rebook queue (pending + abandoned) for oversight. */
+export async function listRebookQueue() {
+  const tasks = await prisma.rebookTask.findMany({
+    where: { status: { in: ['PENDING', 'ABANDONED'] } },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      booking: {
+        select: {
+          id: true,
+          resortName: true,
+          roomTypeName: true,
+          paymentMode: true,
+          agencyPrice: true,
+          checkIn: true,
+          checkOut: true,
+          state: true,
+          agency: { select: { legalName: true } },
+        },
+      },
+    },
+  });
+  return tasks.map((t) => ({
+    id: t.id,
+    bookingId: t.bookingId,
+    status: t.status,
+    attempts: t.attempts,
+    lastError: t.lastError,
+    createdAt: t.createdAt,
+    agencyName: t.booking.agency.legalName,
+    resortName: t.booking.resortName,
+    roomTypeName: t.booking.roomTypeName,
+    paymentMode: t.booking.paymentMode,
+    agencyPrice: t.booking.agencyPrice,
+    checkIn: t.booking.checkIn,
+    checkOut: t.booking.checkOut,
+    bookingState: t.booking.state,
+  }));
+}
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+/** Loads an agency's contact and emits a notification (never throws into the flow). */
+async function notifyAgency(agencyId: string, payload: NotificationPayload, ref: EntityRef): Promise<void> {
+  const agency = await prisma.agency.findUnique({ where: { id: agencyId }, select: { contactEmail: true, contactPhone: true } });
+  if (agency) await notify(payload, { email: agency.contactEmail, phone: agency.contactPhone }, ref);
+}
+
+/**
+ * Prices + validates ONE room line (refresh-before-book, occupancy check,
+ * server-side rate-plan composition) and returns the Prisma create-data `base`
+ * plus the line's agency price. Shared by single and multi-room booking.
+ */
+async function resolveLine(input: CreateBookingInput, markupPct: number, axis: ReturnType<typeof getAxisRooms>, actor: AgentActor) {
   const checkIn = new Date(input.checkIn);
   const checkOut = new Date(input.checkOut);
   const nights = nightsBetween(checkIn, checkOut);
   if (nights <= 0) throw ApiError.badRequest('Check-out must be after check-in');
 
-  const axis = getAxisRooms();
-  // Block, don't queue: health-check before we let a booking proceed (§10).
-  if (!(await axis.healthCheck())) {
-    throw ApiError.serviceUnavailable('AxisRooms is unavailable — booking is temporarily disabled');
-  }
+  const plan: RatePlanCode = input.plan ?? 'EP';
+  const adults = input.adults ?? input.guests;
+  // v3 §2.2 — child ages, when supplied, define the child count authoritatively.
+  const childAges = input.childAges;
+  const children = childAges ? childAges.length : input.children ?? 0;
+  const extraBeds = input.extraBeds ?? 0;
+  const totalGuests = adults + children;
 
-  // Refresh-before-book: authoritative fresh read, not the cache.
   const roomType = await axis.getRoomType(input.resortId, input.roomTypeId);
-  if (!roomType || roomType.availableCount < 1) {
-    throw ApiError.conflict('Selected room type is no longer available');
-  }
-  if (roomType.maxOccupancy < input.guests) {
-    throw ApiError.badRequest('Room type does not accommodate the requested occupancy');
-  }
+  if (!roomType || roomType.availableCount < 1) throw ApiError.conflict('Selected room type is no longer available');
+  if (roomType.maxOccupancy < totalGuests) throw ApiError.badRequest('Room type does not accommodate the requested occupancy');
+  // v3 §3 — re-check the B2B channel policy at commit (stop-sell / cap / allotment).
+  await assertBookable(input.resortId, input.roomTypeId, checkIn, checkOut, actor.agencyId, roomType.availableCount);
   const resort = (await axis.listResorts()).find((r) => r.id === input.resortId);
   if (!resort) throw ApiError.notFound('Resort not found');
 
-  const markupPct = Number(config.markupPct);
-  const price = computeAgencyPrice(roomType.baseRatePerNight, nights, markupPct);
-
-  // The unified credit gate — one decision for both branches. Outstanding is
-  // the sum of unpaid credit invoices (Phase 7 finance).
-  const outstanding = await getOutstanding(actor.agencyId);
-  const gate = evaluateCreditGate({
-    paymentMode: config.paymentMode,
-    outstandingBalance: outstanding,
-    agencyPrice: price.agencyPrice,
-    effectiveCreditLimit: Number(config.creditLimit),
+  const charge = await priceRoom({
+    resortId: input.resortId,
+    roomTypeId: input.roomTypeId,
+    plan,
+    checkIn,
+    nights,
+    occupancy: { adults, children, extraBeds, childAges },
+    markupPct,
+    axisBaseRate: roomType.baseRatePerNight,
   });
 
   const base = {
@@ -123,47 +312,159 @@ export async function createBooking(input: CreateBookingInput, actor: AgentActor
     checkIn,
     checkOut,
     nights,
-    guests: input.guests,
-    baseRate: price.baseTotal,
-    agencyPrice: price.agencyPrice,
+    guests: totalGuests,
+    ratePlan: plan,
+    adults,
+    children,
+    extraBeds,
+    priceBreakdown: charge as unknown as Prisma.InputJsonValue,
+    baseRate: charge.roomChargeTotal,
+    agencyPrice: charge.agencyPrice,
     markupPct,
+    // v3 §8 — persist guest data; DPDP data-minimisation keeps only the ID last-4.
+    leadGuestName: input.guest?.name || null,
+    leadGuestPhone: input.guest?.phone || null,
+    leadGuestEmail: input.guest?.email || null,
+    specialRequests: input.guest?.specialRequests || null,
+    guestIdType: input.guest?.idNumber ? input.guest.idType || null : null,
+    guestIdLast4: input.guest?.idNumber ? input.guest.idNumber.replace(/\s/g, '').slice(-4) : null,
+    roomingList: input.guest?.roomingList?.length ? (input.guest.roomingList as unknown as Prisma.InputJsonValue) : undefined,
   };
+  return { base, agencyPrice: charge.agencyPrice };
+}
 
-  if (gate.branch === 'confirm_on_credit') {
-    const booking = await prisma.booking.create({
-      data: { ...base, paymentMode: 'CREDIT', state: 'CONFIRMED_ON_CREDIT' },
-    });
-    await recordAuditLogSafe({
-      entityType: 'Booking',
-      entityId: booking.id,
-      event: 'BOOKING_CONFIRMED_ON_CREDIT',
-      actorId: actor.userId,
-      actorRole: 'AGENT',
-      after: { agencyPrice: price.agencyPrice, projectedBalance: gate.projectedBalance },
-    });
-    // Both branches converge on commit → push to AxisRooms.
-    const committed = await commitToAxisRooms(booking);
-    // Record the credit obligation: an ISSUED invoice + CRS ledger event.
-    await recordBookingObligation(committed, config.paymentTerms);
-    broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
-    return committed;
-  }
+type LineBase = Awaited<ReturnType<typeof resolveLine>>['base'];
 
-  // Pay-first branch: tentative hold in the portal (NOT AxisRooms) with a TTL.
-  const holdExpiresAt = new Date(Date.now() + env.BOOKING_HOLD_TTL_MINUTES * 60 * 1000);
-  const booking = await prisma.booking.create({
-    data: { ...base, paymentMode: 'PREPAY', state: 'AWAITING_PAYMENT', holdExpiresAt },
+/** Confirm-on-credit line: create → commit to AxisRooms → record the credit obligation. */
+async function createCreditLine(base: LineBase, actor: AgentActor, paymentTerms: string, projectedBalance: number, groupId?: string): Promise<Booking> {
+  const booking = await prisma.booking.create({ data: { ...base, groupId, paymentMode: 'CREDIT', state: 'CONFIRMED_ON_CREDIT' } });
+  await recordAuditLogSafe({
+    entityType: 'Booking',
+    entityId: booking.id,
+    event: 'BOOKING_CONFIRMED_ON_CREDIT',
+    actorId: actor.userId,
+    actorRole: 'AGENT',
+    after: { agencyPrice: base.agencyPrice, projectedBalance, groupId },
   });
+  const committed = await commitToAxisRooms(booking);
+  // v3 §5.2 — only bill the agency once the reservation actually lands. If the
+  // push failed (COMMIT_FAILED), the obligation is recorded when the rebook
+  // succeeds (onRebookResolved), so a queued booking never owes prematurely.
+  if (committed.state === 'COMMITTED') await recordBookingObligation(committed, paymentTerms);
+  return committed;
+}
+
+/** Pay-first line: tentative portal hold (NOT AxisRooms) with a TTL. */
+async function createPrepayLine(base: LineBase, actor: AgentActor, holdExpiresAt: Date, groupId?: string): Promise<Booking> {
+  const booking = await prisma.booking.create({ data: { ...base, groupId, paymentMode: 'PREPAY', state: 'AWAITING_PAYMENT', holdExpiresAt } });
   await recordAuditLogSafe({
     entityType: 'Booking',
     entityId: booking.id,
     event: 'BOOKING_AWAITING_PAYMENT',
     actorId: actor.userId,
     actorRole: 'AGENT',
-    after: { agencyPrice: price.agencyPrice, holdExpiresAt },
+    after: { agencyPrice: base.agencyPrice, holdExpiresAt, groupId },
   });
-  broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
   return booking;
+}
+
+export async function createBooking(input: CreateBookingInput, actor: AgentActor): Promise<Booking> {
+  await assertAgencyCanTransact(actor.agencyId);
+  const config = await getCurrentConfigOrThrow(actor.agencyId);
+  const axis = getAxisRooms();
+  // Block, don't queue: health-check before we let a booking proceed (§10).
+  if (!(await axis.healthCheck())) throw ApiError.serviceUnavailable('AxisRooms is unavailable — booking is temporarily disabled');
+
+  const { base, agencyPrice } = await resolveLine(input, Number(config.markupPct), axis, actor);
+  const outstanding = await getOutstanding(actor.agencyId);
+  const gate = evaluateCreditGate({
+    paymentMode: config.paymentMode,
+    outstandingBalance: outstanding,
+    agencyPrice,
+    effectiveCreditLimit: Number(config.creditLimit),
+  });
+
+  const booking =
+    gate.branch === 'confirm_on_credit'
+      ? await createCreditLine(base, actor, config.paymentTerms, gate.projectedBalance)
+      : await createPrepayLine(base, actor, new Date(Date.now() + env.BOOKING_HOLD_TTL_MINUTES * 60 * 1000));
+  broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
+  // COMMIT_FAILED lines already got a "pending confirmation" notice; only the
+  // ones that actually committed get the confirmation here.
+  if (gate.branch === 'confirm_on_credit' && booking.state === 'COMMITTED') {
+    await notifyAgency(
+      actor.agencyId,
+      { event: 'BOOKING_CONFIRMED', resortName: booking.resortName, rooms: 1, checkIn: booking.checkIn.toISOString() },
+      { entityType: 'Booking', entityId: booking.id },
+    );
+  }
+  return booking;
+}
+
+/**
+ * v3 §4 — group / multi-room booking. Prices every line server-side, runs the
+ * credit gate on the AGGREGATE total (one decision for the whole cart), then
+ * creates all lines under a shared groupId. Per-line invoices/refunds/credit
+ * notes (§4.3/§6.4) fall out of the existing per-booking finance flow.
+ */
+export async function createGroupBooking(lines: CreateBookingInput[], actor: AgentActor): Promise<Booking[]> {
+  if (lines.length === 0) throw ApiError.badRequest('A booking must contain at least one room');
+  await assertAgencyCanTransact(actor.agencyId);
+  const config = await getCurrentConfigOrThrow(actor.agencyId);
+  const axis = getAxisRooms();
+  if (!(await axis.healthCheck())) throw ApiError.serviceUnavailable('AxisRooms is unavailable — booking is temporarily disabled');
+
+  const markupPct = Number(config.markupPct);
+  const resolved: { base: LineBase; agencyPrice: number }[] = [];
+  for (const line of lines) resolved.push(await resolveLine(line, markupPct, axis, actor));
+  const aggregate = round2(resolved.reduce((s, r) => s + r.agencyPrice, 0));
+
+  const outstanding = await getOutstanding(actor.agencyId);
+  const gate = evaluateCreditGate({
+    paymentMode: config.paymentMode,
+    outstandingBalance: outstanding,
+    agencyPrice: aggregate,
+    effectiveCreditLimit: Number(config.creditLimit),
+  });
+
+  const groupId = crypto.randomUUID();
+  const created: Booking[] = [];
+  if (gate.branch === 'confirm_on_credit') {
+    for (const r of resolved) created.push(await createCreditLine(r.base, actor, config.paymentTerms, gate.projectedBalance, groupId));
+  } else {
+    const holdExpiresAt = new Date(Date.now() + env.BOOKING_HOLD_TTL_MINUTES * 60 * 1000);
+    for (const r of resolved) created.push(await createPrepayLine(r.base, actor, holdExpiresAt, groupId));
+  }
+  broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
+  const committedLines = created.filter((b) => b.state === 'COMMITTED');
+  if (gate.branch === 'confirm_on_credit' && committedLines.length) {
+    await notifyAgency(
+      actor.agencyId,
+      { event: 'BOOKING_CONFIRMED', resortName: committedLines[0].resortName, rooms: committedLines.length, checkIn: committedLines[0].checkIn.toISOString() },
+      { entityType: 'Booking', entityId: committedLines[0].id },
+    );
+  }
+  return created;
+}
+
+/** Pays every awaiting-payment line in a group (single checkout for the cart). */
+export async function payGroup(groupId: string, actor: AgentActor): Promise<Booking[]> {
+  const lines = await prisma.booking.findMany({
+    where: { groupId, agencyId: actor.agencyId, state: 'AWAITING_PAYMENT' },
+  });
+  if (lines.length === 0) throw ApiError.notFound('No payable rooms in this group');
+  const paid: Booking[] = [];
+  for (const line of lines) paid.push(await payBookingInternal(line.id, actor));
+  broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
+  const committedLines = paid.filter((b) => b.state === 'COMMITTED');
+  if (committedLines.length) {
+    await notifyAgency(
+      actor.agencyId,
+      { event: 'BOOKING_CONFIRMED', resortName: committedLines[0].resortName, rooms: committedLines.length, checkIn: committedLines[0].checkIn.toISOString() },
+      { entityType: 'Booking', entityId: committedLines[0].id },
+    );
+  }
+  return paid;
 }
 
 /** Lazily expires a hold that has passed its TTL. Returns the (possibly updated) booking. */
@@ -202,7 +503,8 @@ async function loadOwnedBooking(bookingId: string, agencyId: string): Promise<Bo
  * real gateway (Decision D2-a) + CRS posting arrive in Phase 7. Only valid
  * while the tentative hold is still live.
  */
-export async function payBooking(bookingId: string, actor: AgentActor): Promise<Booking> {
+/** Pay + commit one line, WITHOUT broadcast/notify (so a group pays once). */
+async function payBookingInternal(bookingId: string, actor: AgentActor): Promise<Booking> {
   let booking = await loadOwnedBooking(bookingId, actor.agencyId);
   booking = await expireIfLapsed(booking);
   if (booking.state === 'EXPIRED') {
@@ -213,8 +515,8 @@ export async function payBooking(bookingId: string, actor: AgentActor): Promise<
   }
 
   // Collect payment via the gateway → records a SUCCEEDED payment, a PAID
-  // invoice, and a CRS PAYMENT event (Phase 7). Throws if capture fails,
-  // leaving the booking awaiting payment.
+  // invoice, and a CRS PAYMENT event. Throws if capture fails, leaving the
+  // booking awaiting payment.
   await collectPaymentForBooking(booking);
 
   const paid = await prisma.booking.update({
@@ -229,8 +531,21 @@ export async function payBooking(bookingId: string, actor: AgentActor): Promise<
     actorRole: 'AGENT',
   });
   // Converge with the credit branch: confirm + commit to AxisRooms.
-  const committed = await commitToAxisRooms({ ...paid, state: 'CONFIRMED' });
+  return commitToAxisRooms({ ...paid, state: 'CONFIRMED' });
+}
+
+export async function payBooking(bookingId: string, actor: AgentActor): Promise<Booking> {
+  const committed = await payBookingInternal(bookingId, actor);
   broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
+  // v3 §5.2 — if the post-payment commit failed, the payment is captured but the
+  // booking is COMMIT_FAILED and queued; the agent already got a "pending" notice.
+  if (committed.state === 'COMMITTED') {
+    await notifyAgency(
+      actor.agencyId,
+      { event: 'BOOKING_CONFIRMED', resortName: committed.resortName, rooms: 1, checkIn: committed.checkIn.toISOString() },
+      { entityType: 'Booking', entityId: committed.id },
+    );
+  }
   return committed;
 }
 
@@ -250,6 +565,11 @@ export async function cancelBooking(bookingId: string, actor: AgentActor): Promi
   // events. Only relevant once an invoice exists (i.e. the booking committed).
   if (booking.state === 'COMMITTED') {
     await applyCancellation(booking, cancelledAt);
+  } else if (booking.state === 'COMMIT_FAILED') {
+    // v3 §5.2 — never committed at the resort: full refund of any held funds, and
+    // close the rebook task so the worker stops retrying.
+    await applyCancellation(booking, cancelledAt, { chargePct: 0 });
+    await closeRebookTask(booking.id);
   }
 
   const cancelled = await prisma.booking.update({
@@ -265,6 +585,62 @@ export async function cancelBooking(bookingId: string, actor: AgentActor): Promi
     before: { state: booking.state },
   });
   broadcast(['bookings', 'finance'], { agencyId: actor.agencyId });
+  await notifyAgency(
+    actor.agencyId,
+    { event: 'BOOKING_CANCELLED', resortName: cancelled.resortName },
+    { entityType: 'Booking', entityId: cancelled.id },
+  );
+  return cancelled;
+}
+
+/**
+ * v3 §7 — admin/resort-side cancellation. NO_SHOW applies the cancellation
+ * policy (100% for a past check-in); RESORT_CANCEL forces a full refund with a
+ * mandatory reason. Operates on any booking (no agency scope) and notifies the
+ * agency. Relocation is handled as resort-cancel + a manual re-book.
+ */
+export async function adminCancelBooking(
+  bookingId: string,
+  opts: { kind: 'NO_SHOW' | 'RESORT_CANCEL'; reason?: string },
+  actor: { actorId: string; actorRole: ActorRole },
+): Promise<Booking> {
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) throw ApiError.notFound('Booking not found');
+  if (booking.state === 'CANCELLED' || booking.state === 'EXPIRED') {
+    throw ApiError.conflict(`Booking is already ${booking.state.toLowerCase()}`);
+  }
+
+  const cancelledAt = new Date();
+  if (booking.state === 'COMMITTED' && booking.axisRoomsRef) {
+    await getAxisRooms().cancelReservation(booking.axisRoomsRef);
+  }
+  if (booking.state === 'COMMITTED') {
+    // Resort-initiated → full refund (0%); no-show → policy bands (100% for past check-in).
+    await applyCancellation(booking, cancelledAt, opts.kind === 'RESORT_CANCEL' ? { chargePct: 0 } : undefined);
+  } else if (booking.state === 'COMMIT_FAILED') {
+    // v3 §5.2 — resolving an abandoned/queued booking: full refund of held funds + close the task.
+    await applyCancellation(booking, cancelledAt, { chargePct: 0 });
+    await closeRebookTask(booking.id);
+  }
+
+  const cancelled = await prisma.booking.update({ where: { id: booking.id }, data: { state: 'CANCELLED', cancelledAt } });
+  await recordAuditLogSafe({
+    entityType: 'Booking',
+    entityId: booking.id,
+    event: opts.kind === 'NO_SHOW' ? 'BOOKING_NO_SHOW' : 'BOOKING_RESORT_CANCELLED',
+    actorId: actor.actorId,
+    actorRole: actor.actorRole,
+    before: { state: booking.state },
+    after: { reason: opts.reason ?? null },
+  });
+  broadcast(['bookings', 'finance'], { agencyId: booking.agencyId });
+  await notifyAgency(
+    booking.agencyId,
+    opts.kind === 'NO_SHOW'
+      ? { event: 'NO_SHOW_RECORDED', resortName: booking.resortName, checkIn: booking.checkIn.toISOString() }
+      : { event: 'BOOKING_CANCELLED', resortName: booking.resortName, reason: opts.reason },
+    { entityType: 'Booking', entityId: booking.id },
+  );
   return cancelled;
 }
 
@@ -283,6 +659,21 @@ export async function listBookings(agencyId: string, page: number, pageSize: num
     }),
     prisma.booking.count({ where: { agencyId } }),
   ]);
+  return { items, total, page, pageSize };
+}
+
+/** Admin-wide booking list across all agencies (read-only oversight). */
+export async function listAllBookings(page: number, pageSize: number) {
+  const [rows, total] = await Promise.all([
+    prisma.booking.findMany({
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      include: { agency: { select: { legalName: true } } },
+    }),
+    prisma.booking.count(),
+  ]);
+  const items = rows.map(({ agency, ...b }) => ({ ...b, agencyName: agency.legalName }));
   return { items, total, page, pageSize };
 }
 

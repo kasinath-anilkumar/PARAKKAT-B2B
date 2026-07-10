@@ -38,15 +38,42 @@ financeRouter.get(
 /**
  * @openapi
  * /finance/invoices/{id}/settle:
- *   post: { summary: Settle (pay) an outstanding credit invoice (AGENCY), tags: [Finance], security: [{ bearerAuth: [] }] }
+ *   post: { summary: Settle (fully or partially) an outstanding credit invoice (AGENCY), tags: [Finance], security: [{ bearerAuth: [] }] }
  */
 financeRouter.post(
   '/invoices/:id/settle',
   authenticate,
   accountLimiter,
   requireRole('AGENCY'),
-  validate({ params: idParam }),
+  validate({ params: idParam, body: z.object({ amount: z.number().positive().optional() }) }),
   asyncHandler(financeController.settle),
+);
+
+/**
+ * @openapi
+ * /finance/payments:
+ *   get: { summary: Recent inbound payments with settlement/chargeback state (ADMIN), tags: [Finance], security: [{ bearerAuth: [] }] }
+ */
+financeRouter.get(
+  '/payments',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({ query: pageQuery }),
+  asyncHandler(financeController.payments),
+);
+
+/**
+ * @openapi
+ * /finance/payments/{id}/chargeback:
+ *   post: { summary: Record a chargeback against a settled inbound payment (ADMIN), tags: [Finance], security: [{ bearerAuth: [] }] }
+ */
+financeRouter.post(
+  '/payments/:id/chargeback',
+  authenticate,
+  accountLimiter,
+  requireRole('ADMIN'),
+  validate({ params: idParam, body: z.object({ reason: z.string().min(3).max(500) }) }),
+  asyncHandler(financeController.chargeback),
 );
 
 /**
@@ -62,3 +89,10 @@ financeRouter.get('/reconciliation', authenticate, requireRole('ADMIN'), asyncHa
  *   post: { summary: Manually flush pending CRS outbox events (ADMIN), tags: [Finance], security: [{ bearerAuth: [] }] }
  */
 financeRouter.post('/crs/flush', authenticate, requireRole('ADMIN'), asyncHandler(financeController.flushCrs));
+
+/**
+ * @openapi
+ * /finance/dunning/run:
+ *   post: { summary: Run dunning — overdue reminders, auto-suspension, credit alerts (ADMIN), tags: [Finance], security: [{ bearerAuth: [] }] }
+ */
+financeRouter.post('/dunning/run', authenticate, requireRole('ADMIN'), asyncHandler(financeController.dunning));

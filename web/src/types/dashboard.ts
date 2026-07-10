@@ -60,14 +60,42 @@ export interface AgencySummary {
   recentBookings: RecentBooking[];
 }
 
+export interface CreditNote {
+  id: string;
+  number: string;
+  reason: string;
+  taxableValue: string;
+  gstRate: number;
+  cgst: string;
+  sgst: string;
+  igst: string;
+  total: string;
+  irn: string | null;
+  createdAt: string;
+}
+
 export interface Invoice {
   id: string;
   number: string;
   amount: string;
+  // v3 §5.3 — cumulative amount settled (partial payments).
+  amountPaid: string;
   paymentMode: 'PREPAY' | 'CREDIT';
-  status: 'ISSUED' | 'PAID' | 'VOID' | 'REFUNDED';
+  status: 'ISSUED' | 'PARTIALLY_PAID' | 'PAID' | 'VOID' | 'REFUNDED';
   dueDate: string | null;
   issuedAt: string;
+  // v3 §6.1 GST
+  gstRate: number;
+  sac: string;
+  placeOfSupply: string | null;
+  supplierGstin: string | null;
+  recipientGstin: string | null;
+  cgst: string;
+  sgst: string;
+  igst: string;
+  invoiceTotal: string;
+  irn: string | null;
+  creditNotes?: CreditNote[];
 }
 
 export interface Balance {

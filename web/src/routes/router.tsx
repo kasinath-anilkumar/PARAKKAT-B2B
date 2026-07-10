@@ -25,6 +25,7 @@ import { IntegrationsPage } from '../admin/sections/IntegrationsPage';
 import { SecurityPage } from '../admin/sections/SecurityPage';
 import { SettingsPage } from '../admin/sections/SettingsPage';
 import { SupportPage } from '../admin/sections/SupportPage';
+import { InventoryPage } from '../admin/sections/InventoryPage';
 import { AgencyAgentsPage } from '../agency/sections/AgencyAgentsPage';
 import { AgencyBookingsPage } from '../agency/sections/AgencyBookingsPage';
 import { GuestsPage } from '../agency/sections/GuestsPage';
@@ -89,6 +90,7 @@ const ADMIN_PAGES: { path: string; element: JSX.Element }[] = [
   { path: '/admin/bookings', element: <AdminBookingsPage /> },
   { path: '/admin/finance', element: <AdminFinancePage /> },
   { path: '/admin/notifications', element: <NotificationsPage /> },
+  { path: '/admin/inventory', element: <InventoryPage /> },
   { path: '/admin/crs', element: <CrsPage /> },
   { path: '/admin/integrations', element: <IntegrationsPage /> },
   { path: '/admin/security', element: <SecurityPage /> },

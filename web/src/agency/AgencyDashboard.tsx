@@ -19,6 +19,8 @@ export function AgencyDashboard() {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['agency-summary'],
     queryFn: dashboardApi.getAgencySummary,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 
   return (

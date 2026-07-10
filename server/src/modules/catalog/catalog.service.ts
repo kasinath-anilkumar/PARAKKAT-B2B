@@ -1,10 +1,13 @@
+import type { RatePlanCode } from '@prisma/client';
 import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { getAxisRooms } from '../../lib/axisrooms';
-import type { AvailabilityQuery, Resort, RoomTypeAvailability } from '../../lib/axisrooms';
+import type { Resort, RoomTypeAvailability } from '../../lib/axisrooms';
 import { TtlCache } from '../../lib/axisrooms/cache';
 import { ApiError } from '../../utils/apiError';
-import { computeAgencyPrice, nightsBetween } from '../booking/pricing';
+import { nightsBetween } from '../booking/pricing';
+import { pricePlansForRoom, type ComposedCharge } from '../pricing/pricing.service';
+import { applyChannelPolicy } from '../inventory/inventory.service';
 
 // Short-TTL cache for availability reads (§10). Bypassed by the booking path's
 // refresh-before-book fresh read.
@@ -12,8 +15,73 @@ const availabilityCache = new TtlCache<RoomTypeAvailability[]>(
   env.AVAILABILITY_CACHE_TTL_SECONDS * 1000,
 );
 
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
 export async function listResorts(): Promise<Resort[]> {
   return getAxisRooms().listResorts();
+}
+
+export interface BrowseRoom {
+  resortId: string;
+  resortName: string;
+  location: string;
+  roomTypeId: string;
+  roomTypeName: string;
+  maxOccupancy: number;
+  /** Indicative "from" agency price per night (AxisRooms base × agency markup, EP).
+   *  The exact price is resolved once dates + occupancy + plan are chosen. */
+  indicativePricePerNight: number;
+}
+
+/**
+ * Dateless catalog browse (per the room-first flow): every resort's room types
+ * from AxisRooms with an indicative from-price, so agents can browse before
+ * picking dates. Availability is NOT asserted here — it is verified per-date
+ * against both AxisRooms and the portal channel policy at the next step
+ * (searchAvailability) and again at commit.
+ */
+export async function browseRooms(agencyId: string): Promise<BrowseRoom[]> {
+  const config = await prisma.commercialConfiguration.findFirst({ where: { agencyId, isCurrent: true } });
+  if (!config) throw ApiError.conflict('Agency has no commercial configuration');
+  const markupPct = Number(config.markupPct);
+
+  const axis = getAxisRooms();
+  const resorts = await axis.listResorts();
+  const perResort = await Promise.all(resorts.map((r) => axis.listRoomTypes(r.id)));
+
+  const rooms: BrowseRoom[] = [];
+  resorts.forEach((resort, i) => {
+    for (const rt of perResort[i]) {
+      rooms.push({
+        resortId: resort.id,
+        resortName: resort.name,
+        location: resort.location,
+        roomTypeId: rt.roomTypeId,
+        roomTypeName: rt.roomTypeName,
+        maxOccupancy: rt.maxOccupancy,
+        indicativePricePerNight: round2(rt.baseRatePerNight * (1 + markupPct / 100)),
+      });
+    }
+  });
+  return rooms;
+}
+
+export interface CatalogAvailabilityQuery {
+  resortId: string;
+  checkIn: string;
+  checkOut: string;
+  guests: number;
+  adults?: number;
+  children?: number;
+  childAges?: number[];
+  extraBeds?: number;
+}
+
+export interface PlanPrice {
+  plan: RatePlanCode;
+  pricePerNight: number;
+  priceTotal: number;
+  breakdown: ComposedCharge;
 }
 
 export interface PricedRoomType {
@@ -22,39 +90,72 @@ export interface PricedRoomType {
   maxOccupancy: number;
   availableCount: number;
   nights: number;
-  // Only the AGENCY price is exposed — base rate (company margin) and the
-  // customer price are never surfaced to the agent (§9).
+  // Rate-plan-aware pricing (v3 §2). Only the AGENCY price is exposed.
+  plans: PlanPrice[];
+  // Back-compat: the cheapest plan's price.
   agencyPricePerNight: number;
   agencyPriceTotal: number;
 }
 
 export async function searchAvailability(
-  query: AvailabilityQuery,
+  query: CatalogAvailabilityQuery,
   agencyId: string,
 ): Promise<PricedRoomType[]> {
-  const config = await prisma.commercialConfiguration.findFirst({
-    where: { agencyId, isCurrent: true },
-  });
+  const config = await prisma.commercialConfiguration.findFirst({ where: { agencyId, isCurrent: true } });
   if (!config) throw ApiError.conflict('Agency has no commercial configuration');
   const markupPct = Number(config.markupPct);
 
   const nights = nightsBetween(new Date(query.checkIn), new Date(query.checkOut));
   if (nights <= 0) throw ApiError.badRequest('Check-out must be after check-in');
 
-  const key = `${query.resortId}:${query.checkIn}:${query.checkOut}:${query.guests}`;
+  const adults = query.adults ?? query.guests;
+  const childAges = query.childAges;
+  const children = childAges ? childAges.length : query.children ?? 0;
+  const extraBeds = query.extraBeds ?? 0;
+  const guests = adults + children;
+
+  const key = `${query.resortId}:${query.checkIn}:${query.checkOut}:${guests}`;
   let rooms = availabilityCache.get(key);
   if (!rooms) {
-    rooms = await getAxisRooms().searchAvailability(query);
+    rooms = await getAxisRooms().searchAvailability({ resortId: query.resortId, checkIn: query.checkIn, checkOut: query.checkOut, guests });
     availabilityCache.set(key, rooms);
   }
 
-  return rooms.map((rt) => ({
-    roomTypeId: rt.roomTypeId,
-    roomTypeName: rt.roomTypeName,
-    maxOccupancy: rt.maxOccupancy,
-    availableCount: rt.availableCount,
-    nights,
-    agencyPricePerNight: computeAgencyPrice(rt.baseRatePerNight, 1, markupPct).agencyPrice,
-    agencyPriceTotal: computeAgencyPrice(rt.baseRatePerNight, nights, markupPct).agencyPrice,
-  }));
+  const checkInDate = new Date(query.checkIn);
+  const checkOutDate = new Date(query.checkOut);
+  // v3 §3 — apply the B2B channel policy (stop-sell / caps / allotments) to the
+  // live AxisRooms availability before display. Per-agency, so applied post-cache.
+  rooms = await applyChannelPolicy(query.resortId, rooms, checkInDate, checkOutDate, agencyId);
+
+  const results: PricedRoomType[] = [];
+  for (const rt of rooms) {
+    const charges = await pricePlansForRoom({
+      resortId: query.resortId,
+      roomTypeId: rt.roomTypeId,
+      checkIn: checkInDate,
+      nights,
+      occupancy: { adults, children, extraBeds, childAges },
+      markupPct,
+      axisBaseRate: rt.baseRatePerNight,
+    });
+    if (charges.length === 0) continue; // occupancy invalid / no rate for this room
+
+    const plans: PlanPrice[] = charges.map((c) => ({
+      plan: c.plan,
+      pricePerNight: round2(c.agencyPrice / nights),
+      priceTotal: c.agencyPrice,
+      breakdown: c,
+    }));
+    results.push({
+      roomTypeId: rt.roomTypeId,
+      roomTypeName: rt.roomTypeName,
+      maxOccupancy: rt.maxOccupancy,
+      availableCount: rt.availableCount,
+      nights,
+      plans,
+      agencyPricePerNight: plans[0].pricePerNight,
+      agencyPriceTotal: plans[0].priceTotal,
+    });
+  }
+  return results;
 }

@@ -28,7 +28,31 @@ export async function listInvoices(): Promise<Paged<Invoice>> {
   return res.data;
 }
 
-export async function settleInvoice(id: string): Promise<Invoice> {
-  const res = await httpClient.post(`/finance/invoices/${id}/settle`);
+/** v3 §5.3 — settle fully (amount omitted) or partially (amount = installment). */
+export async function settleInvoice(id: string, amount?: number): Promise<Invoice> {
+  const res = await httpClient.post(`/finance/invoices/${id}/settle`, amount === undefined ? {} : { amount });
+  return res.data;
+}
+
+export interface AdminPayment {
+  id: string;
+  agencyName: string;
+  invoiceNumber: string | null;
+  amount: number;
+  status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED' | 'CHARGEBACK';
+  gatewayRef: string | null;
+  createdAt: string;
+  chargedBack: boolean;
+}
+
+/** v3 §5.3 — admin: recent inbound payments with settlement/chargeback state. */
+export async function listPayments(): Promise<Paged<AdminPayment>> {
+  const res = await httpClient.get('/finance/payments', { params: { pageSize: 100 } });
+  return res.data;
+}
+
+/** v3 §5.3 — admin: record a chargeback against a settled inbound payment. */
+export async function recordChargeback(id: string, reason: string): Promise<unknown> {
+  const res = await httpClient.post(`/finance/payments/${id}/chargeback`, { reason });
   return res.data;
 }

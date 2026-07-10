@@ -1,5 +1,4 @@
 import { prisma } from '../../lib/prisma';
-import { getAgencyBalance } from '../finance/finance.service';
 
 function dayKey(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -29,9 +28,12 @@ export function defaultRange(): DateRange {
 
 /** Company-wide dashboard data (ADMIN/VERIFIER) — real numbers from the ledger. */
 export async function adminSummary(range: DateRange) {
+  // Batch every independent read into ONE transaction so the whole dashboard
+  // uses a single pooled connection (Supabase pool-friendly) rather than firing
+  // ~15 concurrent queries. `totalRevenue` is derived from the payment-overview
+  // groupBy below instead of a separate aggregate.
   const [
     totalBookings,
-    revenueAgg,
     activeAgents,
     activeAgencies,
     outstandingAgg,
@@ -45,17 +47,17 @@ export async function adminSummary(range: DateRange) {
     bookByAgencyRaw,
     pendingApprovals,
     ekycPending,
-  ] = await Promise.all([
+  ] = await prisma.$transaction([
     prisma.booking.count(),
-    prisma.payment.aggregate({ where: { direction: 'INBOUND', status: 'SUCCEEDED' }, _sum: { amount: true } }),
     prisma.user.count({ where: { role: 'AGENT', status: 'ACTIVE' } }),
     prisma.agency.count({ where: { status: 'ACTIVE', activatedAt: { not: null } } }),
     prisma.invoice.aggregate({ where: { status: 'ISSUED', paymentMode: 'CREDIT' }, _sum: { amount: true } }),
-    prisma.booking.groupBy({ by: ['state'], _count: { _all: true } }),
+    prisma.booking.groupBy({ by: ['state'], _count: true, orderBy: { state: 'asc' } }),
     prisma.booking.groupBy({
       by: ['resortId', 'resortName'],
       where: { state: 'COMMITTED' },
       _sum: { agencyPrice: true },
+      orderBy: { resortId: 'asc' },
     }),
     prisma.booking.findMany({
       orderBy: { createdAt: 'desc' },
@@ -70,15 +72,16 @@ export async function adminSummary(range: DateRange) {
       where: { createdAt: { gte: range.from, lte: range.to } },
       select: { createdAt: true },
     }),
-    // Payment overview: sums grouped by direction+status.
-    prisma.payment.groupBy({ by: ['direction', 'status'], _sum: { amount: true } }),
+    // Payment overview: sums grouped by direction+status (also gives total revenue).
+    prisma.payment.groupBy({ by: ['direction', 'status'], _sum: { amount: true }, orderBy: { direction: 'asc' } }),
     // Top agencies by inbound revenue.
     prisma.payment.groupBy({
       by: ['agencyId'],
       where: { direction: 'INBOUND', status: 'SUCCEEDED' },
       _sum: { amount: true },
+      orderBy: { agencyId: 'asc' },
     }),
-    prisma.booking.groupBy({ by: ['agencyId'], _count: { _all: true } }),
+    prisma.booking.groupBy({ by: ['agencyId'], _count: true, orderBy: { agencyId: 'asc' } }),
     prisma.agencyApplication.count({ where: { lifecycleState: 'REVIEW' } }),
     prisma.agencyApplication.count({ where: { lifecycleState: { in: ['VERIFICATION', 'REVIEW'] } } }),
   ]);
@@ -103,7 +106,7 @@ export async function adminSummary(range: DateRange) {
   }));
 
   const topResorts = topResortsRaw
-    .map((r) => ({ resortId: r.resortId, resortName: r.resortName, revenue: Number(r._sum.agencyPrice ?? 0) }))
+    .map((r) => ({ resortId: r.resortId, resortName: r.resortName, revenue: Number(r._sum?.agencyPrice ?? 0) }))
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 5);
 
@@ -113,7 +116,7 @@ export async function adminSummary(range: DateRange) {
   let failedPay = 0;
   let refunded = 0;
   for (const p of paymentsByStatus) {
-    const amt = Number(p._sum.amount ?? 0);
+    const amt = Number(p._sum?.amount ?? 0);
     if (p.direction === 'OUTBOUND') {
       if (p.status === 'SUCCEEDED') refunded += amt;
     } else if (p.status === 'SUCCEEDED') paid += amt;
@@ -122,19 +125,21 @@ export async function adminSummary(range: DateRange) {
   }
 
   // Top agencies by revenue.
-  const revById = new Map(revenueByAgencyRaw.map((r) => [r.agencyId, Number(r._sum.amount ?? 0)]));
-  const bookById = new Map(bookByAgencyRaw.map((r) => [r.agencyId, r._count._all]));
+  const revById = new Map(revenueByAgencyRaw.map((r) => [r.agencyId, Number(r._sum?.amount ?? 0)]));
+  const bookById = new Map(bookByAgencyRaw.map((r) => [r.agencyId, r._count]));
   const topAgencyIds = [...revById.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id]) => id);
-  const [topAgencyRecords, outByAgency] = await Promise.all([
+  // Second (dependent) batch, again a single transaction → one connection.
+  const [topAgencyRecords, outByAgency] = await prisma.$transaction([
     prisma.agency.findMany({ where: { id: { in: topAgencyIds } }, select: { id: true, legalName: true } }),
     prisma.invoice.groupBy({
       by: ['agencyId'],
       where: { agencyId: { in: topAgencyIds }, status: 'ISSUED', paymentMode: 'CREDIT' },
       _sum: { amount: true },
+      orderBy: { agencyId: 'asc' },
     }),
   ]);
   const nameById = new Map(topAgencyRecords.map((a) => [a.id, a.legalName]));
-  const outById = new Map(outByAgency.map((r) => [r.agencyId, Number(r._sum.amount ?? 0)]));
+  const outById = new Map(outByAgency.map((r) => [r.agencyId, Number(r._sum?.amount ?? 0)]));
   const topAgencies = topAgencyIds.map((id) => ({
     agencyId: id,
     agencyName: nameById.get(id) ?? '(unknown)',
@@ -146,12 +151,12 @@ export async function adminSummary(range: DateRange) {
   return {
     kpis: {
       totalBookings,
-      totalRevenue: Number(revenueAgg._sum.amount ?? 0),
+      totalRevenue: paid, // derived from the payment-overview groupBy (no extra query)
       activeAgents,
       activeAgencies,
-      outstandingAmount: Number(outstandingAgg._sum.amount ?? 0),
+      outstandingAmount: Number(outstandingAgg._sum?.amount ?? 0),
     },
-    bookingsByStatus: byStatus.map((s) => ({ state: s.state, count: s._count._all })),
+    bookingsByStatus: byStatus.map((s) => ({ state: s.state, count: s._count })),
     series,
     topResorts,
     topAgencies,
@@ -174,20 +179,25 @@ export async function adminSummary(range: DateRange) {
 
 /** Agency-scoped dashboard data (AGENCY/AGENT). */
 export async function agencySummary(agencyId: string, range: DateRange) {
-  const [balance, totalBookings, byStatus, recent, revenueAgg, bookingsInRange] = await Promise.all([
-    getAgencyBalance(agencyId),
-    prisma.booking.count({ where: { agencyId } }),
-    prisma.booking.groupBy({ by: ['state'], where: { agencyId }, _count: { _all: true } }),
-    prisma.booking.findMany({ where: { agencyId }, orderBy: { createdAt: 'desc' }, take: 6 }),
-    prisma.payment.aggregate({
-      where: { agencyId, direction: 'INBOUND', status: 'SUCCEEDED' },
-      _sum: { amount: true },
-    }),
-    prisma.booking.findMany({
-      where: { agencyId, createdAt: { gte: range.from, lte: range.to } },
-      select: { createdAt: true, agencyPrice: true },
-    }),
-  ]);
+  // One transaction / one connection for the whole agency dashboard (incl. the
+  // balance inputs, inlined so there's no nested query fan-out).
+  const [outstandingAgg, config, totalBookings, byStatus, recent, revenueAgg, bookingsInRange] =
+    await prisma.$transaction([
+      prisma.invoice.aggregate({ where: { agencyId, paymentMode: 'CREDIT', status: 'ISSUED' }, _sum: { amount: true } }),
+      prisma.commercialConfiguration.findFirst({ where: { agencyId, isCurrent: true } }),
+      prisma.booking.count({ where: { agencyId } }),
+      prisma.booking.groupBy({ by: ['state'], where: { agencyId }, _count: true, orderBy: { state: 'asc' } }),
+      prisma.booking.findMany({ where: { agencyId }, orderBy: { createdAt: 'desc' }, take: 6 }),
+      prisma.payment.aggregate({ where: { agencyId, direction: 'INBOUND', status: 'SUCCEEDED' }, _sum: { amount: true } }),
+      prisma.booking.findMany({
+        where: { agencyId, createdAt: { gte: range.from, lte: range.to } },
+        select: { createdAt: true, agencyPrice: true },
+      }),
+    ]);
+
+  const outstanding = Number(outstandingAgg._sum?.amount ?? 0);
+  const creditLimit = config ? Number(config.creditLimit) : 0;
+  const balance = { outstanding, creditLimit, available: Math.max(0, creditLimit - outstanding) };
 
   const days = eachDay(range.from, range.to);
   const spendByDay = new Map<string, number>();
@@ -206,12 +216,12 @@ export async function agencySummary(agencyId: string, range: DateRange) {
   return {
     kpis: {
       totalBookings,
-      totalSpend: Number(revenueAgg._sum.amount ?? 0),
+      totalSpend: Number(revenueAgg._sum?.amount ?? 0),
       outstanding: balance.outstanding,
       creditLimit: balance.creditLimit,
       available: balance.available,
     },
-    bookingsByStatus: byStatus.map((s) => ({ state: s.state, count: s._count._all })),
+    bookingsByStatus: byStatus.map((s) => ({ state: s.state, count: s._count })),
     series,
     recentBookings: recent.map((b) => ({
       id: b.id,

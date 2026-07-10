@@ -5,9 +5,9 @@ import { prisma } from '../../lib/prisma';
 import { getStorage } from '../../lib/storage';
 import { getDigio } from '../../lib/digio';
 import { ApiError } from '../../utils/apiError';
-import { generateRandomToken } from '../../utils/crypto';
 import { recordAuditLog, recordAuditLogSafe } from '../audit/audit.service';
 import { hashPassword } from '../auth/password.service';
+import { generateStrongPassword } from '../auth/passwordPolicy';
 import { transitionApplication } from '../lifecycle/lifecycle.service';
 import { notify } from '../notifications/notification.service';
 
@@ -228,10 +228,11 @@ export async function activateAgencyForApplication(
   const existing = await prisma.user.findUnique({ where: { email: agencyUserEmail } });
   let temporaryPassword: string | undefined;
   if (!existing) {
-    temporaryPassword = generateRandomToken(12);
+    // v3 §10.2 — policy-compliant temp password; force a change at first login.
+    temporaryPassword = generateStrongPassword(14);
     const passwordHash = await hashPassword(temporaryPassword);
     const user = await prisma.user.create({
-      data: { email: agencyUserEmail, passwordHash, role: 'AGENCY', agencyId: agency.id },
+      data: { email: agencyUserEmail, passwordHash, role: 'AGENCY', agencyId: agency.id, mustChangePassword: true },
     });
     await recordAuditLogSafe({
       entityType: 'User',

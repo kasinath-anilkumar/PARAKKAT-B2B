@@ -8,7 +8,10 @@ import * as bookingController from './booking.controller';
 import {
   bookingIdParamSchema,
   createBookingSchema,
+  createGroupBookingSchema,
+  groupIdParamSchema,
   listBookingsQuerySchema,
+  resortCancelSchema,
 } from './booking.schema';
 
 export const bookingRouter = Router();
@@ -32,6 +35,36 @@ bookingRouter.post(
 
 /**
  * @openapi
+ * /bookings/group:
+ *   post:
+ *     summary: Create a multi-room group booking (AGENT/AGENCY)
+ *     tags: [Bookings]
+ *     security: [{ bearerAuth: [] }]
+ */
+bookingRouter.post(
+  '/group',
+  ...agencySide,
+  validate({ body: createGroupBookingSchema }),
+  asyncHandler(bookingController.createGroup),
+);
+
+/**
+ * @openapi
+ * /bookings/group/{groupId}/pay:
+ *   post:
+ *     summary: Pay all awaiting-payment lines of a group (AGENT/AGENCY)
+ *     tags: [Bookings]
+ *     security: [{ bearerAuth: [] }]
+ */
+bookingRouter.post(
+  '/group/:groupId/pay',
+  ...agencySide,
+  validate({ params: groupIdParamSchema }),
+  asyncHandler(bookingController.payGroup),
+);
+
+/**
+ * @openapi
  * /bookings:
  *   get:
  *     summary: List the agency's bookings (AGENT/AGENCY)
@@ -43,6 +76,75 @@ bookingRouter.get(
   ...agencySide,
   validate({ query: listBookingsQuerySchema }),
   asyncHandler(bookingController.list),
+);
+
+/**
+ * @openapi
+ * /bookings/admin:
+ *   get:
+ *     summary: List all bookings across agencies (ADMIN, read-only oversight)
+ *     tags: [Bookings]
+ *     security: [{ bearerAuth: [] }]
+ */
+bookingRouter.get(
+  '/admin',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({ query: listBookingsQuerySchema }),
+  asyncHandler(bookingController.adminList),
+);
+
+/**
+ * @openapi
+ * /bookings/admin/{id}/no-show:
+ *   post: { summary: Record a no-show (ADMIN), tags: [Bookings], security: [{ bearerAuth: [] }] }
+ */
+bookingRouter.post(
+  '/admin/:id/no-show',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({ params: bookingIdParamSchema }),
+  asyncHandler(bookingController.adminNoShow),
+);
+
+/**
+ * @openapi
+ * /bookings/admin/{id}/resort-cancel:
+ *   post: { summary: Resort-initiated cancellation with reason (ADMIN), tags: [Bookings], security: [{ bearerAuth: [] }] }
+ */
+bookingRouter.post(
+  '/admin/:id/resort-cancel',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({ params: bookingIdParamSchema, body: resortCancelSchema }),
+  asyncHandler(bookingController.adminResortCancel),
+);
+
+/**
+ * @openapi
+ * /bookings/admin/rebook-queue:
+ *   get: { summary: List commit-failed bookings queued for rebook (ADMIN), tags: [Bookings], security: [{ bearerAuth: [] }] }
+ */
+bookingRouter.get('/admin/rebook-queue', authenticate, requireRole('ADMIN'), asyncHandler(bookingController.rebookQueue));
+
+/**
+ * @openapi
+ * /bookings/admin/rebook/run:
+ *   post: { summary: Process the pending rebook queue now (ADMIN), tags: [Bookings], security: [{ bearerAuth: [] }] }
+ */
+bookingRouter.post('/admin/rebook/run', authenticate, requireRole('ADMIN'), asyncHandler(bookingController.runRebookQueue));
+
+/**
+ * @openapi
+ * /bookings/admin/rebook/{id}/retry:
+ *   post: { summary: Force-retry a single commit-failed booking (ADMIN), tags: [Bookings], security: [{ bearerAuth: [] }] }
+ */
+bookingRouter.post(
+  '/admin/rebook/:id/retry',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({ params: bookingIdParamSchema }),
+  asyncHandler(bookingController.retryRebook),
 );
 
 /**

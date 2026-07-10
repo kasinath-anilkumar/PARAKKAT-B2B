@@ -15,7 +15,17 @@ export type NotificationPayload =
   | { event: 'AGREEMENT_ESIGN_REQUEST'; applicationId: string; signingUrl: string }
   | { event: 'AGENCY_ACTIVATED'; loginUrl: string; temporaryPassword?: string }
   | { event: 'AGENCY_SUSPENDED'; legalName: string | null }
-  | { event: 'AGENCY_REACTIVATED'; legalName: string | null };
+  | { event: 'AGENCY_REACTIVATED'; legalName: string | null }
+  | { event: 'INVOICE_OVERDUE'; number: string; amount: number; daysOverdue: number }
+  | { event: 'INVOICE_DUE_REMINDER'; number: string; amount: number; dueDate: string }
+  | { event: 'CREDIT_UTILIZATION_ALERT'; utilizationPct: number; creditLimit: number }
+  | { event: 'BOOKING_CONFIRMED'; resortName: string; rooms: number; checkIn: string }
+  | { event: 'BOOKING_CANCELLED'; resortName: string; reason?: string }
+  | { event: 'BOOKING_PENDING_CONFIRMATION'; resortName: string }
+  | { event: 'BOOKING_CONFIRMATION_FAILED'; resortName: string }
+  | { event: 'NO_SHOW_RECORDED'; resortName: string; checkIn: string }
+  | { event: 'PAYMENT_RECEIVED'; number: string; amount: number }
+  | { event: 'PAYMENT_CHARGEBACK'; number: string; amount: number; reason: string };
 
 export type NotificationEvent = NotificationPayload['event'];
 
@@ -25,6 +35,12 @@ export interface RenderedNotification {
   text: string;
   /** Present only for time-sensitive events; sent when SMS notifications are enabled. */
   sms?: string;
+  /** WhatsApp body (v3 §9); falls back to `sms` when omitted. */
+  whatsapp?: string;
+}
+
+function inr(n: number): string {
+  return `₹${Math.round(n).toLocaleString('en-IN')}`;
 }
 
 function wrap(title: string, body: string): { html: string; text: string } {
@@ -91,6 +107,65 @@ export function renderNotification(payload: NotificationPayload): RenderedNotifi
       const subject = 'Your agency has been reactivated';
       const body = `Your agency${payload.legalName ? ` ${payload.legalName}` : ''} is active again and can transact.`;
       return { subject, ...wrap(subject, body) };
+    }
+    case 'INVOICE_DUE_REMINDER': {
+      const subject = `Payment reminder — invoice ${payload.number}`;
+      const body = `Invoice ${payload.number} for ${inr(payload.amount)} is due on ${payload.dueDate.slice(0, 10)}. Please settle it on time to keep your credit available.`;
+      const short = `Reminder: invoice ${payload.number} (${inr(payload.amount)}) is due ${payload.dueDate.slice(0, 10)}.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'INVOICE_OVERDUE': {
+      const subject = `Overdue invoice ${payload.number}`;
+      const body = `Invoice ${payload.number} for ${inr(payload.amount)} is ${payload.daysOverdue} day(s) overdue. Please settle it to avoid suspension of booking rights.`;
+      const short = `Overdue: invoice ${payload.number} (${inr(payload.amount)}) is ${payload.daysOverdue}d late. Please pay to avoid suspension.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'CREDIT_UTILIZATION_ALERT': {
+      const subject = 'Credit utilisation alert';
+      const body = `You have used ${payload.utilizationPct}% of your ${inr(payload.creditLimit)} credit limit. Settle outstanding invoices to free up credit for new bookings.`;
+      const short = `Credit alert: ${payload.utilizationPct}% of your ${inr(payload.creditLimit)} limit used.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'BOOKING_CONFIRMED': {
+      const subject = `Booking confirmed — ${payload.resortName}`;
+      const body = `Your booking of ${payload.rooms} room(s) at ${payload.resortName} (check-in ${payload.checkIn.slice(0, 10)}) is confirmed.`;
+      const short = `Confirmed: ${payload.rooms} room(s) at ${payload.resortName}, check-in ${payload.checkIn.slice(0, 10)}.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'BOOKING_CANCELLED': {
+      const subject = `Booking cancelled — ${payload.resortName}`;
+      const body = `Your booking at ${payload.resortName} has been cancelled.${payload.reason ? ` Reason: ${payload.reason}.` : ''} Any applicable refund/credit note has been processed.`;
+      const short = `Cancelled: ${payload.resortName}.${payload.reason ? ` ${payload.reason}.` : ''}`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'BOOKING_PENDING_CONFIRMATION': {
+      const subject = `Booking received — confirming with ${payload.resortName}`;
+      const body = `We've received your booking for ${payload.resortName} and any payment is secured. We're completing the final confirmation with the resort's system and will confirm shortly — no action is needed.`;
+      const short = `Booking for ${payload.resortName} received — final confirmation in progress.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'BOOKING_CONFIRMATION_FAILED': {
+      const subject = `Action needed — booking at ${payload.resortName}`;
+      const body = `We were unable to confirm your booking at ${payload.resortName} with the resort's system after several attempts. Our team is resolving this and any amount paid will be refunded or re-booked. We'll be in touch shortly.`;
+      const short = `Couldn't confirm ${payload.resortName}. Our team is resolving it; any payment will be refunded/re-booked.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'NO_SHOW_RECORDED': {
+      const subject = `No-show recorded — ${payload.resortName}`;
+      const body = `A no-show was recorded for your booking at ${payload.resortName} (check-in ${payload.checkIn.slice(0, 10)}). A charge has been applied per the cancellation policy.`;
+      return { subject, ...wrap(subject, body) };
+    }
+    case 'PAYMENT_RECEIVED': {
+      const subject = `Payment received — invoice ${payload.number}`;
+      const body = `We've received your payment of ${inr(payload.amount)} against invoice ${payload.number}. Thank you.`;
+      const short = `Payment of ${inr(payload.amount)} received for invoice ${payload.number}.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
+    }
+    case 'PAYMENT_CHARGEBACK': {
+      const subject = `Payment reversed — ${payload.number}`;
+      const body = `A payment of ${inr(payload.amount)} against ${payload.number} has been reversed (chargeback). Reason: ${payload.reason}. This amount is now outstanding again — please contact us to resolve it.`;
+      const short = `Chargeback: ${inr(payload.amount)} on ${payload.number} reversed. Now outstanding.`;
+      return { subject, ...wrap(subject, body), sms: short, whatsapp: short };
     }
   }
 }

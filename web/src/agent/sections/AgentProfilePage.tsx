@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AppShell } from '../../components/layout/AppShell';
 import { Badge, Button, DataTable, Field, Input, PageHeader, Tabs, Toggle, type Column } from '../../components/ui/kit';
 import { useAuth } from '../../hooks/useAuth';
+import { ChangePasswordCard, MustChangePasswordBanner } from '../../shared/ChangePasswordCard';
 import { AGENT_LOGIN_HISTORY, AGENT_SESSIONS, type AgentSession, type LoginEvent } from '../mock';
 
 export function AgentProfilePage() {
@@ -30,6 +31,8 @@ export function AgentProfilePage() {
   return (
     <AppShell>
       <PageHeader title="Profile" subtitle="Your personal information and account security." />
+
+      <MustChangePasswordBanner />
 
       <Tabs
         tabs={[
@@ -66,15 +69,7 @@ export function AgentProfilePage() {
       {tab === 'account' && (
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="mb-3 text-sm font-semibold text-slate-700">Change password</div>
-              <div className="space-y-3">
-                <Field label="Current password"><Input type="password" /></Field>
-                <Field label="New password"><Input type="password" /></Field>
-                <Field label="Confirm new password"><Input type="password" /></Field>
-                <div className="pt-1"><Button variant="primary">Update password</Button></div>
-              </div>
-            </div>
+            <ChangePasswordCard />
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="flex items-center justify-between">
                 <div>

@@ -5,6 +5,7 @@ export type BookingState =
   | 'PAID'
   | 'CONFIRMED'
   | 'COMMITTED'
+  | 'COMMIT_FAILED'
   | 'CANCELLED'
   | 'EXPIRED';
 
@@ -14,20 +15,41 @@ export interface Resort {
   location: string;
 }
 
+export type RatePlan = 'EP' | 'CP' | 'MAP' | 'AP';
+
+export interface PlanPrice {
+  plan: RatePlan;
+  pricePerNight: number;
+  priceTotal: number;
+  breakdown: {
+    plan: RatePlan;
+    nights: number;
+    occupancy: { adults: number; children: number; extraBeds: number; baseOccupancy: number };
+    perNight: { base: number; extraAdults: number; extraAdultAmount: number; childAmount: number; extraBedAmount: number; total: number };
+    roomChargeTotal: number;
+    markupPct: number;
+    agencyPrice: number;
+  };
+}
+
 export interface PricedRoomType {
   roomTypeId: string;
   roomTypeName: string;
   maxOccupancy: number;
   availableCount: number;
   nights: number;
+  plans: PlanPrice[];
+  // Back-compat: cheapest plan.
   agencyPricePerNight: number;
   agencyPriceTotal: number;
 }
 
 export interface Booking {
   id: string;
+  groupId?: string | null;
   resortName: string;
   roomTypeName: string;
+  ratePlan?: RatePlan;
   checkIn: string;
   checkOut: string;
   nights: number;
@@ -38,4 +60,11 @@ export interface Booking {
   holdExpiresAt: string | null;
   axisRoomsRef: string | null;
   createdAt: string;
+  // v3 §8 — guest data (ID masked: only last-4 retained).
+  leadGuestName?: string | null;
+  leadGuestPhone?: string | null;
+  leadGuestEmail?: string | null;
+  specialRequests?: string | null;
+  guestIdType?: string | null;
+  guestIdLast4?: string | null;
 }

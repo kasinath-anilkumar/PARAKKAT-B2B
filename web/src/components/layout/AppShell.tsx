@@ -55,7 +55,8 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
     queryKey: ['admin-summary'],
     queryFn: dashboardApi.getAdminSummary,
     enabled: user?.role === 'ADMIN',
-    staleTime: 30_000,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
   const ekycCount = summary?.approvals?.ekycPending ?? 0;
 

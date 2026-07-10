@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, DataTable, Field, Input, PageHeader, Tabs, Toggle, type Column } from '../../components/ui/kit';
+import { Badge, Button, DataTable, Input, PageHeader, Tabs, Toggle, type Column } from '../../components/ui/kit';
+import { ChangePasswordCard, MustChangePasswordBanner } from '../../shared/ChangePasswordCard';
 import { AGENCY_SESSIONS, LOGIN_HISTORY, type AgencySession, type LoginEvent } from '../mock';
 
 export function AccountSettingsPage() {
@@ -36,6 +37,8 @@ export function AccountSettingsPage() {
     <AppShell>
       <PageHeader title="Account Settings" subtitle="Password, two-factor authentication and session security." />
 
+      <MustChangePasswordBanner />
+
       <Tabs
         tabs={[
           { key: 'password', label: 'Password' },
@@ -47,17 +50,7 @@ export function AccountSettingsPage() {
         onChange={setTab}
       />
 
-      {tab === 'password' && (
-        <div className="max-w-md rounded-xl border border-slate-200 bg-white p-4">
-          <div className="mb-3 text-sm font-semibold text-slate-700">Change password</div>
-          <div className="space-y-3">
-            <Field label="Current password"><Input type="password" /></Field>
-            <Field label="New password"><Input type="password" /></Field>
-            <Field label="Confirm new password"><Input type="password" /></Field>
-            <div className="pt-1"><Button variant="primary">Update password</Button></div>
-          </div>
-        </div>
-      )}
+      {tab === 'password' && <ChangePasswordCard />}
 
       {tab === '2fa' && (
         <div className="max-w-md space-y-3 rounded-xl border border-slate-200 bg-white p-4">

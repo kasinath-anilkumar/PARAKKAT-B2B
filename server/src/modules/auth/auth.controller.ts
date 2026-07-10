@@ -71,3 +71,15 @@ export async function logout(req: Request, res: Response): Promise<void> {
   res.clearCookie(REFRESH_COOKIE_NAME, { path: '/api/auth' });
   res.status(204).send();
 }
+
+/** v3 §10.2 — authenticated self-service password change. */
+export async function changePassword(req: Request, res: Response): Promise<void> {
+  const result = await authService.changePassword(
+    req.user!.id,
+    req.body.currentPassword,
+    req.body.newPassword,
+    requestMeta(req),
+  );
+  res.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
+  res.status(200).json({ user: result.user, accessToken: result.accessToken });
+}

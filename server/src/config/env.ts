@@ -42,6 +42,11 @@ const baseSchema = z.object({
   // per-user setting. Set to false in dev to skip mandatory MFA for testing —
   // login then follows each user's own mfaEnabled flag. Keep true in prod.
   MFA_ENFORCED: boolEnv(true),
+  // v3 §10.2 — enforce MFA for agency principals (default) and, optionally, agents.
+  MFA_ENFORCE_AGENCY: boolEnv(true),
+  MFA_ENFORCE_AGENT: boolEnv(false),
+  // v3 §10.2 — minimum password length (policy also requires upper/lower/digit/symbol).
+  PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).max(128).default(10),
 
   STORAGE_PROVIDER: z.enum(['s3', 'local']).default('local'),
   S3_BUCKET: z.string().optional(),
@@ -104,6 +109,9 @@ const baseSchema = z.object({
   AXISROOMS_FORCE_DOWN: boolEnv(false),
   // Tentative-hold TTL for pay-first bookings (default 15 min, §10).
   BOOKING_HOLD_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  // v3 §5.2 — max automatic AxisRooms rebook attempts before a commit-failed
+  // booking is parked for manual admin resolution.
+  REBOOK_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   // Short-TTL availability cache (seconds).
   AVAILABILITY_CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(30),
 
@@ -124,6 +132,29 @@ const baseSchema = z.object({
   // Cancellation policy bands (Decision D4). JSON array of { minDaysBefore, chargePct }
   // sorted desc by minDaysBefore; the first band whose minDaysBefore <= daysBefore applies.
   CANCELLATION_POLICY_JSON: z.string().optional(),
+
+  // --- GST / e-invoicing (v3 §6.1; configurable, not hardcoded) ---
+  // Slabs by room value per night. JSON array of { upTo: number|null, rate: number }
+  // ascending by upTo; upTo:null is the top (open-ended) band. Default = GST 2.0.
+  GST_SLABS_JSON: z.string().optional(),
+  // Per-resort GST identity for place-of-supply. JSON map
+  // { "<resortId>": { "stateCode": "30", "gstin": "30AABCP...1Z5" } }.
+  RESORT_GST_JSON: z.string().optional(),
+  // Stamp a (mock) IRN + QR at generation when the supplying entity is over the
+  // e-invoicing threshold. Real IRP integration replaces the stub when live.
+  EINVOICE_ENABLED: boolEnv(false),
+
+  // --- WhatsApp (v3 §9, first-class channel) ---
+  WHATSAPP_PROVIDER: z.enum(['console', 'meta']).default('console'),
+  WHATSAPP_NOTIFICATIONS_ENABLED: boolEnv(false),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
+
+  // --- Dunning / overdue (v3 §6.3; all thresholds configurable) ---
+  // Auto-suspend an agency once it has a credit invoice this many days overdue.
+  DUNNING_SUSPEND_DAYS: z.coerce.number().int().positive().default(15),
+  // Notify an agency once its credit utilisation reaches this percentage.
+  CREDIT_UTILIZATION_ALERT_PCT: z.coerce.number().int().positive().max(100).default(80),
 
   // --- Hardening (Phase 8) ---
   // Soft anomaly threshold: this many onboarding drafts from one IP within the

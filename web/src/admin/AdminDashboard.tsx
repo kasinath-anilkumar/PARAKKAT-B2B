@@ -96,7 +96,14 @@ const GRADIENTS = ['from-sky-400 to-blue-500', 'from-emerald-400 to-green-500', 
 
 export function AdminDashboard() {
   const [period, setPeriod] = useState<'Daily' | 'Weekly' | 'Monthly'>('Weekly');
-  const { data, isLoading } = useQuery({ queryKey: ['admin-summary'], queryFn: dashboardApi.getAdminSummary });
+  // staleTime + no focus refetch so this heavy summary is fetched once and
+  // shared with the sidebar's ['admin-summary'] query (no duplicate requests).
+  const { data, isLoading } = useQuery({
+    queryKey: ['admin-summary'],
+    queryFn: dashboardApi.getAdminSummary,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
 
   return (
     <AppShell title="Dashboard">

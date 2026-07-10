@@ -46,6 +46,9 @@ export interface AxisRoomsClient {
   /** Health probe used before allowing a commit (§10 — block, don't queue, on downtime). */
   healthCheck(): Promise<boolean>;
   listResorts(): Promise<Resort[]>;
+  /** Catalog read — all room types for a resort, WITHOUT a date/availability filter
+   *  (used for the dateless browse view; availability is verified later per-date). */
+  listRoomTypes(resortId: string): Promise<RoomTypeAvailability[]>;
   searchAvailability(query: AvailabilityQuery): Promise<RoomTypeAvailability[]>;
   /** Fresh read for a single room type — used to refresh-before-book. */
   getRoomType(resortId: string, roomTypeId: string): Promise<RoomTypeAvailability | null>;

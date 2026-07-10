@@ -3,12 +3,14 @@ import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/apiError';
 import { recordAuditLogSafe } from '../audit/audit.service';
-import { verifyPassword } from './password.service';
+import { hashPassword, verifyPassword } from './password.service';
+import { assertStrongPassword } from './passwordPolicy';
 import {
   type RefreshTokenMeta,
   issueAccessToken,
   issueMfaPendingToken,
   issueRefreshToken,
+  revokeAllUserTokens,
   revokeRefreshToken,
   rotateRefreshToken,
   verifyMfaPendingToken,
@@ -16,11 +18,14 @@ import {
 import { sendLoginEmailOtp, verifyEmailLoginCode, verifyTotpLoginCode } from './mfa/mfa.service';
 
 /**
- * ADMIN/VERIFIER must have MFA (unless MFA_ENFORCED is disabled for dev);
- * AGENCY/AGENT follow their own mfaEnabled flag.
+ * v3 §10.2 — mandatory-MFA matrix: ADMIN/VERIFIER (MFA_ENFORCED) and AGENCY
+ * principals (MFA_ENFORCE_AGENCY) must use MFA; AGENT is opt-in unless
+ * MFA_ENFORCE_AGENT is set. Anyone else follows their own mfaEnabled flag.
  */
 export function isMfaRequiredForRole(role: Role, mfaEnabled: boolean): boolean {
   if (env.MFA_ENFORCED && (role === 'ADMIN' || role === 'VERIFIER')) return true;
+  if (env.MFA_ENFORCE_AGENCY && role === 'AGENCY') return true;
+  if (env.MFA_ENFORCE_AGENT && role === 'AGENT') return true;
   return mfaEnabled;
 }
 
@@ -31,6 +36,7 @@ interface SafeUser {
   agencyId: string | null;
   mfaEnabled: boolean;
   mfaMethod: 'NONE' | 'TOTP' | 'EMAIL';
+  mustChangePassword: boolean;
 }
 
 function toSafeUser(user: User): SafeUser {
@@ -41,6 +47,7 @@ function toSafeUser(user: User): SafeUser {
     agencyId: user.agencyId,
     mfaEnabled: user.mfaEnabled,
     mfaMethod: user.mfaMethod,
+    mustChangePassword: user.mustChangePassword,
   };
 }
 
@@ -210,4 +217,46 @@ export async function refreshSession(
 
 export async function logout(rawRefreshToken: string): Promise<void> {
   await revokeRefreshToken(rawRefreshToken);
+}
+
+export interface ChangePasswordResult {
+  user: SafeUser;
+  accessToken: string;
+  refreshToken: string;
+}
+
+/**
+ * v3 §10.2 — self-service password change. Verifies the current password,
+ * enforces the password policy on the new one, clears mustChangePassword, and
+ * revokes every existing session (defence: a changed password invalidates other
+ * devices). Issues a fresh session so the caller stays logged in.
+ */
+export async function changePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  meta: RefreshTokenMeta,
+): Promise<ChangePasswordResult> {
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+
+  const ok = await verifyPassword(currentPassword, user.passwordHash);
+  if (!ok) {
+    await recordAuditLogSafe({ entityType: 'User', entityId: user.id, event: 'PASSWORD_CHANGE_FAILED', actorId: user.id, actorRole: user.role });
+    throw ApiError.badRequest('Current password is incorrect');
+  }
+  assertStrongPassword(newPassword);
+  if (await verifyPassword(newPassword, user.passwordHash)) {
+    throw ApiError.badRequest('New password must be different from the current one');
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await prisma.user.update({ where: { id: user.id }, data: { passwordHash, mustChangePassword: false } });
+  // Invalidate all sessions, then mint a fresh one for this device.
+  await revokeAllUserTokens(user.id);
+  await recordAuditLogSafe({ entityType: 'User', entityId: user.id, event: 'PASSWORD_CHANGED', actorId: user.id, actorRole: user.role });
+
+  const updated = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+  const accessToken = issueAccessToken({ id: updated.id, role: updated.role, agencyId: updated.agencyId, mfaVerified: true });
+  const { token: refreshToken } = await issueRefreshToken(updated.id, meta);
+  return { user: toSafeUser(updated), accessToken, refreshToken };
 }

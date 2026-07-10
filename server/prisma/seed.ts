@@ -107,6 +107,34 @@ async function main() {
     // eslint-disable-next-line no-console
     console.log('Demo users ready (no MFA): agency@demo.local / agent@demo.local  — password: demo1234');
   }
+
+  // --- v3 §2 — portal rate plans & occupancy pricing for the mock rooms -----
+  const PRICING = [
+    { resortId: 'resort-goa', roomTypeId: 'goa-deluxe', roomTypeName: 'Deluxe Sea View', base: 4500, maxOccupancy: 2, maxAdults: 3 },
+    { resortId: 'resort-goa', roomTypeId: 'goa-suite', roomTypeName: 'Beach Suite', base: 8200, maxOccupancy: 4, maxAdults: 4 },
+    { resortId: 'resort-munnar', roomTypeId: 'munnar-cottage', roomTypeName: 'Tea Garden Cottage', base: 5200, maxOccupancy: 3, maxAdults: 3 },
+    { resortId: 'resort-munnar', roomTypeId: 'munnar-villa', roomTypeName: 'Hilltop Villa', base: 11000, maxOccupancy: 6, maxAdults: 5 },
+    { resortId: 'resort-udaipur', roomTypeId: 'udaipur-lakeview', roomTypeName: 'Lake View Room', base: 6800, maxOccupancy: 2, maxAdults: 3 },
+  ];
+  const PLAN_UPLIFT = { EP: 1, CP: 1.1, MAP: 1.25, AP: 1.4 } as const;
+  for (const r of PRICING) {
+    const occ = {
+      extraAdultCharge: Math.round(r.base * 0.3),
+      childCharge: Math.round(r.base * 0.15),
+      extraBedCharge: Math.round(r.base * 0.2),
+    };
+    const cfg = await prisma.roomTypePricing.upsert({
+      where: { resortId_roomTypeId: { resortId: r.resortId, roomTypeId: r.roomTypeId } },
+      create: { resortId: r.resortId, roomTypeId: r.roomTypeId, roomTypeName: r.roomTypeName, baseOccupancy: 2, maxAdults: r.maxAdults, maxChildren: 2, maxOccupancy: r.maxOccupancy, ...occ },
+      update: { roomTypeName: r.roomTypeName, maxAdults: r.maxAdults, maxOccupancy: r.maxOccupancy, ...occ },
+    });
+    await prisma.ratePlanRate.deleteMany({ where: { roomTypePricingId: cfg.id } });
+    await prisma.ratePlanRate.createMany({
+      data: (['EP', 'CP', 'MAP', 'AP'] as const).map((plan) => ({ roomTypePricingId: cfg.id, plan, baseRate: Math.round(r.base * PLAN_UPLIFT[plan]) })),
+    });
+  }
+  // eslint-disable-next-line no-console
+  console.log('Rate-plan & occupancy pricing seeded for mock room types.');
 }
 
 main()

@@ -11,6 +11,7 @@ export async function getUserProfile(userId: string) {
       status: true,
       mfaEnabled: true,
       mfaMethod: true,
+      mustChangePassword: true,
       createdAt: true,
     },
   });

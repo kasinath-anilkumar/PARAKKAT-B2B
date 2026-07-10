@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { authLimiter } from '../../middleware/rateLimit';
+import { authenticate } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../utils/asyncHandler';
 import * as authController from './auth.controller';
-import { loginSchema, mfaVerifySchema } from './auth.schema';
+import { changePasswordSchema, loginSchema, mfaVerifySchema } from './auth.schema';
 import { mfaRouter } from './mfa/mfa.routes';
 
 export const authRouter = Router();
@@ -55,5 +56,21 @@ authRouter.post('/refresh', authLimiter, asyncHandler(authController.refresh));
  *     tags: [Auth]
  */
 authRouter.post('/logout', asyncHandler(authController.logout));
+
+/**
+ * @openapi
+ * /auth/change-password:
+ *   post:
+ *     summary: Change your password (policy-enforced; revokes other sessions)
+ *     tags: [Auth]
+ *     security: [{ bearerAuth: [] }]
+ */
+authRouter.post(
+  '/change-password',
+  authenticate,
+  authLimiter,
+  validate({ body: changePasswordSchema }),
+  asyncHandler(authController.changePassword),
+);
 
 authRouter.use('/mfa', mfaRouter);

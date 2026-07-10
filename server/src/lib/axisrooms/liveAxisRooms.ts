@@ -27,6 +27,9 @@ export class LiveAxisRoomsClient implements AxisRoomsClient {
   async listResorts(): Promise<Resort[]> {
     this.notImplemented('listResorts');
   }
+  async listRoomTypes(_resortId: string): Promise<RoomTypeAvailability[]> {
+    this.notImplemented('listRoomTypes');
+  }
   async searchAvailability(_query: AvailabilityQuery): Promise<RoomTypeAvailability[]> {
     this.notImplemented('searchAvailability');
   }

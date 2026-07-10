@@ -41,6 +41,15 @@ export async function logout(): Promise<void> {
   await httpClient.post('/auth/logout');
 }
 
+/** v3 §10.2 — change password (policy-enforced; revokes other sessions). */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ user: AuthUser; accessToken: string }> {
+  const res = await httpClient.post('/auth/change-password', { currentPassword, newPassword });
+  return res.data;
+}
+
 export async function getMe(): Promise<AuthUser> {
   const res = await httpClient.get<AuthUser>('/users/me');
   return res.data;

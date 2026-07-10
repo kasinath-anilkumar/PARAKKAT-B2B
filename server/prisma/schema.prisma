@@ -23,6 +23,20 @@ enum UserStatus {
   SUSPENDED
 }
 
+// v3 §3 — B2B channel inventory policy kinds.
+enum ChannelPolicyKind {
+  STOP_SELL // close dates for the B2B channel entirely
+  CAP // limit rooms sellable to B2B per day
+}
+
+// v3 §2.1 — meal-inclusive rate plans.
+enum RatePlanCode {
+  EP // European Plan — room only
+  CP // Continental Plan — room + breakfast
+  MAP // Modified American Plan — room + breakfast + one major meal
+  AP // American Plan — room + all meals
+}
+
 enum MfaMethod {
   NONE
   TOTP
@@ -106,13 +120,24 @@ enum BookingState {
   PAID
   CONFIRMED
   COMMITTED
+  // v3 §5.2 — accepted/paid by the portal but the AxisRooms push failed; funds
+  // held, queued for automatic rebook (RebookTask) and manual admin fallback.
+  COMMIT_FAILED
   CANCELLED
   EXPIRED
+}
+
+// v3 §5.2 — lifecycle of a queued rebook attempt.
+enum RebookTaskStatus {
+  PENDING // awaiting (or between) automatic retries
+  RESOLVED // successfully committed to AxisRooms
+  ABANDONED // exhausted retries — needs manual admin resolution (refund/cancel)
 }
 
 // --- Finance (Phase 7) ---
 enum InvoiceStatus {
   ISSUED // owed (credit) or awaiting payment
+  PARTIALLY_PAID // v3 §5.3 — some, but not all, of the amount has been settled
   PAID
   VOID
   REFUNDED
@@ -123,6 +148,7 @@ enum PaymentStatus {
   SUCCEEDED
   FAILED
   REFUNDED
+  CHARGEBACK // v3 §5.3 — a settled inbound payment was disputed/reversed by the gateway
 }
 
 // INBOUND = collection from the agency; OUTBOUND = refund to the agency.
@@ -136,6 +162,7 @@ enum CrsEventType {
   PAYMENT
   REFUND
   CANCELLATION_CHARGE
+  CHARGEBACK // v3 §5.3 — disputed inbound payment reversed
 }
 
 enum CrsOutboxStatus {
@@ -167,6 +194,14 @@ model User {
   passwordHash String
   role         Role
   status       UserStatus @default(ACTIVE)
+  // Display name (agents/sub-users); optional for legacy rows.
+  name         String?
+
+  // Sub-agent capability flags (AGENT role). AGENCY/ADMIN are implicitly full-access.
+  canBook        Boolean @default(true)
+  canCancel      Boolean @default(true)
+  canModify      Boolean @default(true)
+  canViewReports Boolean @default(true)
 
   // Set for AGENCY/AGENT role users; null for ADMIN/VERIFIER.
   agencyId String?
@@ -181,6 +216,10 @@ model User {
   mfaMethod  MfaMethod @default(NONE)
   // AES-256-GCM ciphertext (utils/crypto.ts) — never stored or returned plaintext.
   mfaSecret  String?
+
+  // v3 §10.2 — set when a temporary/admin-set password is issued; cleared on a
+  // successful self-service password change. Drives the "change your password" prompt.
+  mustChangePassword Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -256,6 +295,8 @@ model Agency {
   bookings                 Booking[]
   invoices                 Invoice[]
   payments                 Payment[]
+  creditNotes              CreditNote[]
+  allotments               Allotment[]
 
   @@index([status])
 }
@@ -385,6 +426,8 @@ model Booking {
   id            String @id @default(uuid())
   // Shared correlation id carried into AxisRooms and (Phase 7) the CRS.
   correlationId String @unique @default(uuid())
+  // v3 §4 — groups the room lines of a multi-room booking (null = standalone).
+  groupId       String?
   agencyId      String
   agency        Agency @relation(fields: [agencyId], references: [id])
   agentId       String
@@ -401,6 +444,23 @@ model Booking {
   nights   Int
   guests   Int
 
+  // v3 §2 — rate plan & occupancy snapshot (reproducible pricing).
+  ratePlan       RatePlanCode @default(EP)
+  adults         Int          @default(2)
+  children       Int          @default(0)
+  extraBeds      Int          @default(0)
+  priceBreakdown Json? // full composed room-charge breakdown at booking time
+
+  // v3 §8 — guest data (DPDP: the full guest ID is NOT retained — only the type
+  // and last 4 digits are stored for check-in reference; masked in the UI).
+  leadGuestName   String?
+  leadGuestPhone  String?
+  leadGuestEmail  String?
+  specialRequests String?
+  guestIdType     String?
+  guestIdLast4    String?
+  roomingList     Json? // optional occupant names per room (string[])
+
   baseRate    Decimal     @db.Decimal(14, 2) // total base across the stay
   agencyPrice Decimal     @db.Decimal(14, 2) // base × (1 + markup%)
   markupPct   Decimal     @db.Decimal(5, 2) // snapshot at booking time
@@ -416,12 +476,119 @@ model Booking {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  invoice  Invoice?
-  payments Payment[]
+  invoice    Invoice?
+  payments   Payment[]
+  rebookTask RebookTask?
 
   @@index([agencyId])
   @@index([agentId])
   @@index([state])
+  // Recent-bookings / date-range dashboard queries.
+  @@index([createdAt])
+  @@index([groupId])
+}
+
+// v3 §2 — portal-managed pricing config for an AxisRooms room type (D1-b).
+// Keyed by the opaque AxisRooms (resortId, roomTypeId); no local inventory master.
+model RoomTypePricing {
+  id           String @id @default(uuid())
+  resortId     String
+  roomTypeId   String
+  roomTypeName String
+
+  baseOccupancy Int @default(2) // standard (double) occupancy the base rate covers
+  maxAdults     Int @default(3)
+  maxChildren   Int @default(2)
+  maxOccupancy  Int @default(4)
+
+  extraAdultCharge Decimal @db.Decimal(12, 2) @default(0) // per extra adult / night
+  childCharge      Decimal @db.Decimal(12, 2) @default(0) // flat per-child / night (fallback when no age bands)
+  extraBedCharge   Decimal @db.Decimal(12, 2) @default(0) // per extra bed / night
+
+  // v3 §2.2 — child age bands: [{ minAge, maxAge, charge }] per night. When set,
+  // each child is charged by the band matching its age (no band → free, e.g.
+  // infants). Falls back to the flat childCharge when null/empty.
+  childBands Json?
+
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ratePlans RatePlanRate[]
+
+  @@unique([resortId, roomTypeId])
+}
+
+// v3 §3 — stop-sell / blackout and allocation caps for the B2B channel. Read-only
+// policy layer over AxisRooms (never writes to it); filters availability + is
+// re-checked at booking commit.
+model ChannelPolicy {
+  id         String            @id @default(uuid())
+  resortId   String
+  roomTypeId String? // null = applies to every room type at the resort
+  kind       ChannelPolicyKind
+  startDate  DateTime // inclusive
+  endDate    DateTime // inclusive
+  capPerDay  Int? // required for CAP: max rooms sellable to B2B per day
+  note       String?
+  createdAt  DateTime          @default(now())
+
+  @@index([resortId, roomTypeId])
+}
+
+// v3 §4.2 — a block of rooms reserved for a specific agency for a date range.
+model Allotment {
+  id          String    @id @default(uuid())
+  agencyId    String
+  agency      Agency    @relation(fields: [agencyId], references: [id])
+  resortId    String
+  roomTypeId  String
+  startDate   DateTime
+  endDate     DateTime
+  rooms       Int
+  releaseDate DateTime? // unsold rooms return to the general pool after this date
+  note        String?
+  createdAt   DateTime  @default(now())
+
+  @@index([agencyId])
+  @@index([resortId, roomTypeId])
+}
+
+// v3 §5.2 — queue of bookings the portal accepted/paid but could not push to
+// AxisRooms. A worker retries the reservation; funds stay held until it either
+// commits (RESOLVED) or exhausts retries (ABANDONED → manual admin resolution).
+model RebookTask {
+  id          String           @id @default(uuid())
+  bookingId   String           @unique
+  booking     Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  status      RebookTaskStatus @default(PENDING)
+  attempts    Int              @default(0)
+  lastError   String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  resolvedAt  DateTime?
+
+  @@index([status])
+}
+
+// v3 §2.1/§2.4 — per-plan base rate for a room type, effective-dated (rate calendar).
+model RatePlanRate {
+  id                String          @id @default(uuid())
+  roomTypePricingId String
+  roomTypePricing   RoomTypePricing @relation(fields: [roomTypePricingId], references: [id], onDelete: Cascade)
+
+  plan     RatePlanCode
+  baseRate Decimal      @db.Decimal(12, 2) // standard-occupancy rate / night for this plan
+
+  // Null window = the default/always-applicable rate; dated windows override it.
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  active        Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([roomTypePricingId, plan])
 }
 
 // ---------------------------------------------------------------------------
@@ -437,16 +604,57 @@ model Invoice {
   bookingId     String        @unique
   booking       Booking       @relation(fields: [bookingId], references: [id])
   correlationId String
-  amount        Decimal       @db.Decimal(14, 2)
+  amount        Decimal       @db.Decimal(14, 2) // taxable value = agency price (AR basis)
+  // v3 §5.3 — cumulative amount settled (supports partial payments); AR = amount - amountPaid.
+  amountPaid    Decimal       @default(0) @db.Decimal(14, 2)
   paymentMode   PaymentMode // CREDIT invoices count toward AR until settled
   status        InvoiceStatus @default(ISSUED)
   dueDate       DateTime?
   issuedAt      DateTime      @default(now())
   paidAt        DateTime?
 
-  payments Payment[]
+  // v3 §6.1 — GST tax invoice (India). Rates/slabs are configurable, not hardcoded.
+  gstRate        Int     @default(0) // 0 / 5 / 18 (%) by room-value slab
+  sac            String  @default("996311") // accommodation SAC
+  placeOfSupply  String? // state code (resort location)
+  supplierGstin  String?
+  recipientGstin String?
+  cgst           Decimal @default(0) @db.Decimal(12, 2)
+  sgst           Decimal @default(0) @db.Decimal(12, 2)
+  igst           Decimal @default(0) @db.Decimal(12, 2)
+  invoiceTotal   Decimal @default(0) @db.Decimal(14, 2) // taxable + GST
+  irn            String? // e-invoice reference number where applicable
+
+  payments    Payment[]
+  creditNotes CreditNote[]
 
   @@index([agencyId, status])
+  // Global outstanding aggregate (admin dashboard).
+  @@index([status, paymentMode])
+}
+
+// v3 §6.4 — GST-compliant credit note for reductions/cancellations, linked to an invoice.
+model CreditNote {
+  id            String @id @default(uuid())
+  number        String @unique
+  invoiceId     String
+  invoice       Invoice @relation(fields: [invoiceId], references: [id])
+  agencyId      String
+  agency        Agency  @relation(fields: [agencyId], references: [id])
+  correlationId String
+
+  reason       String
+  taxableValue Decimal @db.Decimal(14, 2)
+  gstRate      Int     @default(0)
+  cgst         Decimal @default(0) @db.Decimal(12, 2)
+  sgst         Decimal @default(0) @db.Decimal(12, 2)
+  igst         Decimal @default(0) @db.Decimal(12, 2)
+  total        Decimal @db.Decimal(14, 2)
+  irn          String?
+
+  createdAt DateTime @default(now())
+
+  @@index([agencyId])
 }
 
 model Payment {
@@ -468,6 +676,9 @@ model Payment {
 
   @@index([agencyId])
   @@index([gatewayRef])
+  // Hot paths: dashboard payment-overview/revenue-in-range, and cancellation lookups.
+  @@index([direction, status, completedAt])
+  @@index([bookingId])
 }
 
 // Outbox for CRS postings — written in the same transaction as the financial

@@ -25,6 +25,7 @@ export const ADMIN_NAV: NavNode[] = [
   { label: 'Reports & Analytics', icon: 'reports', to: '/reports' },
   { label: 'Notification Center', icon: 'bell', to: '/admin/notifications' },
   { label: 'eKYC & Documents', icon: 'shield', badge: 'ekyc', to: '/applications' },
+  { label: 'Channel Inventory', icon: 'resorts', to: '/admin/inventory' },
   { label: 'CRS Synchronization', icon: 'sync', to: '/admin/crs' },
   { label: 'Integrations', icon: 'integrations', to: '/admin/integrations' },
   { label: 'Audit Logs', icon: 'activity', to: '/audit' },

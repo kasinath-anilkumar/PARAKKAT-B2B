@@ -107,6 +107,7 @@ const STATE_COLOR: Record<BookingState, string> = {
   CONFIRMED: '#3b82f6',
   PAID: '#3b82f6',
   AWAITING_PAYMENT: '#f59e0b',
+  COMMIT_FAILED: '#f59e0b',
   DRAFT: '#cbd5e1',
   CANCELLED: '#ef4444',
   EXPIRED: '#a855f7',

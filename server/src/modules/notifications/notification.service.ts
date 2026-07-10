@@ -1,6 +1,7 @@
 import { env } from '../../config/env';
 import { getMailer } from '../../lib/mailer';
 import { getSms } from '../../lib/sms';
+import { getWhatsApp } from '../../lib/whatsapp';
 import { logger } from '../../lib/logger';
 import { maskTail } from '../../utils/mask';
 import { recordAuditLogSafe } from '../audit/audit.service';
@@ -62,6 +63,19 @@ export async function deliverNotification(job: NotificationJob): Promise<void> {
       channels.push('sms');
     } catch (err) {
       logger.error('Notification SMS failed', {
+        event: job.payload.event,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const whatsappBody = rendered.whatsapp ?? rendered.sms;
+  if (env.WHATSAPP_NOTIFICATIONS_ENABLED && whatsappBody && job.recipient.phone) {
+    try {
+      await getWhatsApp().send(job.recipient.phone, whatsappBody);
+      channels.push('whatsapp');
+    } catch (err) {
+      logger.error('Notification WhatsApp failed', {
         event: job.payload.event,
         error: err instanceof Error ? err.message : String(err),
       });

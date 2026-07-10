@@ -52,6 +52,10 @@ export class MockAxisRoomsClient implements AxisRoomsClient {
     return RESORTS;
   }
 
+  async listRoomTypes(resortId: string): Promise<RoomTypeAvailability[]> {
+    return ROOM_TYPES.filter((r) => r.resortId === resortId).map(stripResortId);
+  }
+
   async searchAvailability(query: AvailabilityQuery): Promise<RoomTypeAvailability[]> {
     return ROOM_TYPES.filter(
       (r) => r.resortId === query.resortId && r.maxOccupancy >= query.guests && r.availableCount > 0,

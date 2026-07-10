@@ -4,7 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './api/queryClient';
 import { httpClient } from './api/httpClient';
 import * as authApi from './api/auth.api';
-import { useAuthStore } from './store/authStore';
+import { hasSessionHint, useAuthStore } from './store/authStore';
 import { useRealtime } from './hooks/useRealtime';
 import { AppRouter } from './routes/router';
 
@@ -12,6 +12,7 @@ import { AppRouter } from './routes/router';
  * On first load the access token only lives in memory, so a page refresh
  * loses it. Attempt a silent refresh using the httpOnly cookie before
  * rendering routes, so an already-logged-in user isn't bounced to /login.
+ * Skipped entirely for users who haven't logged in before (no spurious 401).
  */
 function useSessionBootstrap() {
   const [ready, setReady] = useState(false);
@@ -19,6 +20,10 @@ function useSessionBootstrap() {
 
   useEffect(() => {
     async function bootstrap() {
+      if (!hasSessionHint()) {
+        setReady(true);
+        return;
+      }
       try {
         const res = await httpClient.post('/auth/refresh');
         const accessToken = res.data.accessToken as string;

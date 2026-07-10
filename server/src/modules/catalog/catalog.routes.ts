@@ -25,6 +25,21 @@ catalogRouter.get(
 
 /**
  * @openapi
+ * /catalog/rooms:
+ *   get:
+ *     summary: Browse the room catalog without dates (indicative pricing) — AGENT/AGENCY
+ *     tags: [Catalog]
+ *     security: [{ bearerAuth: [] }]
+ */
+catalogRouter.get(
+  '/rooms',
+  authenticate,
+  requireRole('AGENT', 'AGENCY'),
+  asyncHandler(catalogController.browse),
+);
+
+/**
+ * @openapi
  * /catalog/availability:
  *   get:
  *     summary: Search room availability with the agency price (AGENT/AGENCY)
