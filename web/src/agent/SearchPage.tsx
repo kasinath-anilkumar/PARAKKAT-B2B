@@ -34,6 +34,9 @@ function addDaysStr(base: string, days: number): string {
 function nightsBetweenStr(checkIn: string, checkOut: string): number {
   return Math.round((new Date(`${checkOut}T00:00:00`).getTime() - new Date(`${checkIn}T00:00:00`).getTime()) / 86400000);
 }
+function datesOverlapStr(s1: string, e1: string, s2: string, e2: string): boolean {
+  return s1 < e2 && e1 > s2;
+}
 
 const roomKey = (resortId: string, roomTypeId: string) => `${resortId}::${roomTypeId}`;
 
@@ -157,6 +160,18 @@ export function SearchPage() {
   function addRoom(room: BrowseRoom, priced: PricedRoomType) {
     if (!searched) return;
     const o = searched.occ;
+    
+    // Check if adding this room exceeds availableCount for overlapping stay dates
+    const overlappingInCart = cart.filter((l) =>
+      l.roomTypeId === priced.roomTypeId &&
+      datesOverlapStr(l.checkIn, l.checkOut, o.checkIn, o.checkOut)
+    ).length;
+
+    if (overlappingInCart >= priced.availableCount) {
+      setNotice(`Cannot add more rooms of this type. Only ${priced.availableCount} room(s) available.`);
+      return;
+    }
+
     const key = roomKey(room.resortId, priced.roomTypeId);
     const plan = chosenPlan[key] ?? cheapestPlan(priced);
     const price = priced.plans.find((p) => p.plan === plan) ?? priced.plans[0];
@@ -290,6 +305,15 @@ export function SearchPage() {
             const unavailable = !!searched && !priced;
             const plan = priced ? chosenPlan[key] ?? cheapestPlan(priced) : 'EP';
             const planPrice = priced?.plans.find((p) => p.plan === plan) ?? priced?.plans[0];
+            
+            // Check if cart has reached the limit for this room type and search dates
+            const overlappingInCart = searched && priced
+              ? cart.filter((l) =>
+                  l.roomTypeId === priced.roomTypeId &&
+                  datesOverlapStr(l.checkIn, l.checkOut, searched.occ.checkIn, searched.occ.checkOut)
+                ).length
+              : 0;
+            const isLimitReached = priced ? overlappingInCart >= priced.availableCount : false;
             return (
               <div key={key} className={`animate-fade-up overflow-hidden rounded-xl border bg-white transition ${unavailable ? 'border-slate-200 opacity-60' : 'border-slate-200 hover:shadow-md'}`} style={{ animationDelay: `${i * 30}ms` }}>
                 <div className={`relative flex h-28 items-center justify-center bg-gradient-to-br ${gradientFor(r.roomTypeId)} text-blue-500`}>
@@ -319,7 +343,9 @@ export function SearchPage() {
                       </div>
                       <div className="mt-3 flex items-end justify-between">
                         <div><div className="text-lg font-semibold text-slate-900">{inr(planPrice!.priceTotal)}</div><div className="text-[11px] text-slate-400">{inr(planPrice!.pricePerNight)}/night · {priced.nights} night{priced.nights === 1 ? '' : 's'}</div></div>
-                        <Button variant="primary" onClick={() => addRoom(r, priced)}>+ Add room</Button>
+                        <Button variant={isLimitReached ? "secondary" : "primary"} disabled={isLimitReached} onClick={() => addRoom(r, priced)}>
+                          {isLimitReached ? 'Max added' : '+ Add room'}
+                        </Button>
                       </div>
                     </>
                   ) : unavailable ? (

@@ -264,12 +264,22 @@ async function notifyAgency(agencyId: string, payload: NotificationPayload, ref:
   if (agency) await notify(payload, { email: agency.contactEmail, phone: agency.contactPhone }, ref);
 }
 
+function datesOverlap(start1: Date, end1: Date, start2: Date, end2: Date): boolean {
+  return start1 < end2 && end1 > start2;
+}
+
 /**
  * Prices + validates ONE room line (refresh-before-book, occupancy check,
  * server-side rate-plan composition) and returns the Prisma create-data `base`
  * plus the line's agency price. Shared by single and multi-room booking.
  */
-async function resolveLine(input: CreateBookingInput, markupPct: number, axis: ReturnType<typeof getAxisRooms>, actor: AgentActor) {
+async function resolveLine(
+  input: CreateBookingInput,
+  markupPct: number,
+  axis: ReturnType<typeof getAxisRooms>,
+  actor: AgentActor,
+  resolvedSoFar: { base: LineBase; agencyPrice: number }[] = [],
+) {
   // Authoritative stay-date validation (no past dates, max stay, advance window).
   const { checkIn, checkOut, nights } = validateStayDates(input.checkIn, input.checkOut);
 
@@ -284,8 +294,16 @@ async function resolveLine(input: CreateBookingInput, markupPct: number, axis: R
   const roomType = await axis.getRoomType(input.resortId, input.roomTypeId);
   if (!roomType || roomType.availableCount < 1) throw ApiError.conflict('Selected room type is no longer available');
   if (roomType.maxOccupancy < totalGuests) throw ApiError.badRequest('Room type does not accommodate the requested occupancy');
+
+  // Count how many lines of the same room type and overlapping dates are already resolved in this transaction
+  const inGroupCount = resolvedSoFar.filter((r) =>
+    r.base.roomTypeId === input.roomTypeId &&
+    datesOverlap(r.base.checkIn, r.base.checkOut, checkIn, checkOut)
+  ).length;
+  const requestedCount = inGroupCount + 1;
+
   // v3 §3 — re-check the B2B channel policy at commit (stop-sell / cap / allotment).
-  await assertBookable(input.resortId, input.roomTypeId, checkIn, checkOut, actor.agencyId, roomType.availableCount);
+  await assertBookable(input.resortId, input.roomTypeId, checkIn, checkOut, actor.agencyId, roomType.availableCount, requestedCount);
   const resort = (await axis.listResorts()).find((r) => r.id === input.resortId);
   if (!resort) throw ApiError.notFound('Resort not found');
 
@@ -414,7 +432,7 @@ export async function createGroupBooking(lines: CreateBookingInput[], actor: Age
 
   const markupPct = Number(config.markupPct);
   const resolved: { base: LineBase; agencyPrice: number }[] = [];
-  for (const line of lines) resolved.push(await resolveLine(line, markupPct, axis, actor));
+  for (const line of lines) resolved.push(await resolveLine(line, markupPct, axis, actor, resolved));
   const aggregate = round2(resolved.reduce((s, r) => s + r.agencyPrice, 0));
 
   const outstanding = await getOutstanding(actor.agencyId);

@@ -175,3 +175,48 @@ describe('tenant isolation + gating', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('overbooking and group booking limits', () => {
+  const munnarVilla = { resortId: 'resort-munnar', roomTypeId: 'munnar-villa', checkIn: '2026-08-01', checkOut: '2026-08-03', guests: 2 };
+
+  it('rejects group bookings where the total rooms of a type exceeds availability (only 1 villa available)', async () => {
+    const { token } = await setupAgency({ paymentMode: 'CREDIT', creditLimit: 100000, markupPct: 10 });
+
+    // Attempting to book 2 rooms of type munnar-villa (which has availableCount: 1)
+    const res = await request(app)
+      .post('/api/bookings/group')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        lines: [
+          { ...munnarVilla, plan: 'EP' },
+          { ...munnarVilla, plan: 'EP' }
+        ],
+        guest: { name: 'Lead Guest', phone: '9876543210', email: 'guest@example.com' }
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.message).toContain('Selected room type does not have enough availability');
+  });
+
+  it('subtracts active non-committed portal holds from availability', async () => {
+    const { token } = await setupAgency({ paymentMode: 'PREPAY', creditLimit: 0, markupPct: 10 });
+
+    // 1. Create a pay-first booking for the 1 available munnar-villa
+    // This booking is in AWAITING_PAYMENT state (active non-committed portal hold)
+    const holdRes = await request(app)
+      .post('/api/bookings')
+      .set('Authorization', `Bearer ${token}`)
+      .send(munnarVilla);
+    expect(holdRes.status).toBe(201);
+    expect(holdRes.body.state).toBe('AWAITING_PAYMENT');
+
+    // 2. A second booking attempt for the same room type and dates should be rejected
+    const secondRes = await request(app)
+      .post('/api/bookings')
+      .set('Authorization', `Bearer ${token}`)
+      .send(munnarVilla);
+
+    expect(secondRes.status).toBe(409);
+    expect(secondRes.body.message).toContain('Selected room type does not have enough availability');
+  });
+});

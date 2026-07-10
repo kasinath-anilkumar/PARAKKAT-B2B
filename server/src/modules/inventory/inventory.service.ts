@@ -31,7 +31,7 @@ export async function applyChannelPolicy(
 ): Promise<RoomTypeAvailability[]> {
   if (rooms.length === 0) return rooms;
 
-  const [policies, allotments, bookedRaw] = await Promise.all([
+  const [policies, allotments, bookedRaw, nonCommittedRaw] = await Promise.all([
     prisma.channelPolicy.findMany({ where: { resortId, startDate: { lte: checkOut }, endDate: { gte: checkIn } } }),
     prisma.allotment.findMany({ where: { agencyId, resortId, startDate: { lte: checkOut }, endDate: { gte: checkIn } } }),
     prisma.booking.groupBy({
@@ -39,9 +39,20 @@ export async function applyChannelPolicy(
       where: { resortId, state: ACTIVE_STATES, checkIn: { lt: checkOut }, checkOut: { gt: checkIn } },
       _count: true,
     }),
+    prisma.booking.groupBy({
+      by: ['roomTypeId'],
+      where: {
+        resortId,
+        state: { in: ['AWAITING_PAYMENT', 'PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMIT_FAILED'] },
+        checkIn: { lt: checkOut },
+        checkOut: { gt: checkIn },
+      },
+      _count: true,
+    }),
   ]);
 
   const bookedByRt = new Map(bookedRaw.map((b) => [b.roomTypeId, b._count]));
+  const nonCommittedByRt = new Map(nonCommittedRaw.map((b) => [b.roomTypeId, b._count]));
   const allotByRt = new Map<string, number>();
   for (const a of allotments) allotByRt.set(a.roomTypeId, (allotByRt.get(a.roomTypeId) ?? 0) + a.rooms);
 
@@ -50,7 +61,9 @@ export async function applyChannelPolicy(
     const applicable = policies.filter((p) => !p.roomTypeId || p.roomTypeId === rt.roomTypeId);
     if (applicable.some((p) => p.kind === 'STOP_SELL')) continue; // blackout → hide
 
-    let effective = rt.availableCount;
+    const nonCommitted = nonCommittedByRt.get(rt.roomTypeId) ?? 0;
+    let effective = Math.max(0, rt.availableCount - nonCommitted);
+
     const caps = applicable.filter((p) => p.kind === 'CAP' && p.capPerDay != null).map((p) => p.capPerDay as number);
     if (caps.length) {
       const cap = Math.min(...caps);
@@ -73,23 +86,35 @@ export async function assertBookable(
   checkOut: Date,
   agencyId: string,
   axisAvailable: number,
+  requestedCount: number = 1,
 ): Promise<void> {
-  const [policies, allotments, already] = await Promise.all([
+  const [policies, allotments, already, nonCommitted] = await Promise.all([
     prisma.channelPolicy.findMany({
       where: { resortId, startDate: { lte: checkOut }, endDate: { gte: checkIn }, OR: [{ roomTypeId: null }, { roomTypeId }] },
     }),
     prisma.allotment.findMany({ where: { agencyId, resortId, roomTypeId, startDate: { lte: checkOut }, endDate: { gte: checkIn } } }),
     prisma.booking.count({ where: { resortId, roomTypeId, state: ACTIVE_STATES, checkIn: { lt: checkOut }, checkOut: { gt: checkIn } } }),
+    prisma.booking.count({
+      where: {
+        resortId,
+        roomTypeId,
+        state: { in: ['AWAITING_PAYMENT', 'PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMIT_FAILED'] },
+        checkIn: { lt: checkOut },
+        checkOut: { gt: checkIn },
+      },
+    }),
   ]);
 
   if (policies.some((p) => p.kind === 'STOP_SELL')) throw ApiError.conflict('These dates are closed for the B2B channel');
 
-  let effective = axisAvailable;
+  let effective = Math.max(0, axisAvailable - nonCommitted);
   const caps = policies.filter((p) => p.kind === 'CAP' && p.capPerDay != null).map((p) => p.capPerDay as number);
   if (caps.length) effective = Math.min(effective, Math.max(0, Math.min(...caps) - already));
   effective += allotments.reduce((s, a) => s + a.rooms, 0);
 
-  if (effective <= 0) throw ApiError.conflict('No B2B allocation remaining for these dates');
+  if (effective < requestedCount) {
+    throw ApiError.conflict('Selected room type does not have enough availability for the requested rooms');
+  }
 }
 
 // --- Admin CRUD --------------------------------------------------------------
