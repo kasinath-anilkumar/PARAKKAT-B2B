@@ -19,8 +19,6 @@ interface Actor {
   actorRole: ActorRole;
 }
 
-const ACTIVE_STATES: { notIn: BookingState[] } = { notIn: ['CANCELLED', 'EXPIRED'] };
-
 /** Adjusts a resort's room availability for the channel policy (used at search). */
 export async function applyChannelPolicy(
   resortId: string,
@@ -31,21 +29,39 @@ export async function applyChannelPolicy(
 ): Promise<RoomTypeAvailability[]> {
   if (rooms.length === 0) return rooms;
 
+  const now = new Date();
   const [policies, allotments, bookedRaw, nonCommittedRaw] = await Promise.all([
     prisma.channelPolicy.findMany({ where: { resortId, startDate: { lte: checkOut }, endDate: { gte: checkIn } } }),
     prisma.allotment.findMany({ where: { agencyId, resortId, startDate: { lte: checkOut }, endDate: { gte: checkIn } } }),
     prisma.booking.groupBy({
       by: ['roomTypeId'],
-      where: { resortId, state: ACTIVE_STATES, checkIn: { lt: checkOut }, checkOut: { gt: checkIn } },
+      where: {
+        resortId,
+        checkIn: { lt: checkOut },
+        checkOut: { gt: checkIn },
+        OR: [
+          { state: { in: ['PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMITTED', 'COMMIT_FAILED'] } },
+          {
+            state: 'AWAITING_PAYMENT',
+            OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+          },
+        ],
+      },
       _count: true,
     }),
     prisma.booking.groupBy({
       by: ['roomTypeId'],
       where: {
         resortId,
-        state: { in: ['AWAITING_PAYMENT', 'PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMIT_FAILED'] },
         checkIn: { lt: checkOut },
         checkOut: { gt: checkIn },
+        OR: [
+          { state: { in: ['PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMIT_FAILED'] } },
+          {
+            state: 'AWAITING_PAYMENT',
+            OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+          },
+        ],
       },
       _count: true,
     }),
@@ -88,19 +104,40 @@ export async function assertBookable(
   axisAvailable: number,
   requestedCount: number = 1,
 ): Promise<void> {
+  const now = new Date();
   const [policies, allotments, already, nonCommitted] = await Promise.all([
     prisma.channelPolicy.findMany({
       where: { resortId, startDate: { lte: checkOut }, endDate: { gte: checkIn }, OR: [{ roomTypeId: null }, { roomTypeId }] },
     }),
     prisma.allotment.findMany({ where: { agencyId, resortId, roomTypeId, startDate: { lte: checkOut }, endDate: { gte: checkIn } } }),
-    prisma.booking.count({ where: { resortId, roomTypeId, state: ACTIVE_STATES, checkIn: { lt: checkOut }, checkOut: { gt: checkIn } } }),
     prisma.booking.count({
       where: {
         resortId,
         roomTypeId,
-        state: { in: ['AWAITING_PAYMENT', 'PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMIT_FAILED'] },
         checkIn: { lt: checkOut },
         checkOut: { gt: checkIn },
+        OR: [
+          { state: { in: ['PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMITTED', 'COMMIT_FAILED'] } },
+          {
+            state: 'AWAITING_PAYMENT',
+            OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+          },
+        ],
+      },
+    }),
+    prisma.booking.count({
+      where: {
+        resortId,
+        roomTypeId,
+        checkIn: { lt: checkOut },
+        checkOut: { gt: checkIn },
+        OR: [
+          { state: { in: ['PAID', 'CONFIRMED', 'CONFIRMED_ON_CREDIT', 'COMMIT_FAILED'] } },
+          {
+            state: 'AWAITING_PAYMENT',
+            OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+          },
+        ],
       },
     }),
   ]);
