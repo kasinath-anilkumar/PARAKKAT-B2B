@@ -16,7 +16,7 @@ import {
 import { notify, type EntityRef } from '../notifications/notification.service';
 import type { NotificationPayload } from '../notifications/templates';
 import { evaluateCreditGate } from './creditGate';
-import { nightsBetween } from './pricing';
+import { validateStayDates } from './dates';
 import { priceRoom } from '../pricing/pricing.service';
 import { assertBookable } from '../inventory/inventory.service';
 import { Prisma, type ActorRole, type RatePlanCode } from '@prisma/client';
@@ -270,10 +270,8 @@ async function notifyAgency(agencyId: string, payload: NotificationPayload, ref:
  * plus the line's agency price. Shared by single and multi-room booking.
  */
 async function resolveLine(input: CreateBookingInput, markupPct: number, axis: ReturnType<typeof getAxisRooms>, actor: AgentActor) {
-  const checkIn = new Date(input.checkIn);
-  const checkOut = new Date(input.checkOut);
-  const nights = nightsBetween(checkIn, checkOut);
-  if (nights <= 0) throw ApiError.badRequest('Check-out must be after check-in');
+  // Authoritative stay-date validation (no past dates, max stay, advance window).
+  const { checkIn, checkOut, nights } = validateStayDates(input.checkIn, input.checkOut);
 
   const plan: RatePlanCode = input.plan ?? 'EP';
   const adults = input.adults ?? input.guests;

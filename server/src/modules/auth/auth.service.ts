@@ -23,6 +23,8 @@ import { sendLoginEmailOtp, verifyEmailLoginCode, verifyTotpLoginCode } from './
  * MFA_ENFORCE_AGENT is set. Anyone else follows their own mfaEnabled flag.
  */
 export function isMfaRequiredForRole(role: Role, mfaEnabled: boolean): boolean {
+  // Master kill-switch — MFA fully disabled (re-enable by unsetting MFA_DISABLED).
+  if (env.MFA_DISABLED) return false;
   if (env.MFA_ENFORCED && (role === 'ADMIN' || role === 'VERIFIER')) return true;
   if (env.MFA_ENFORCE_AGENCY && role === 'AGENCY') return true;
   if (env.MFA_ENFORCE_AGENT && role === 'AGENT') return true;

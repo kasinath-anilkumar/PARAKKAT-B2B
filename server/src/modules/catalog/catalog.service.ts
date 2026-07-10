@@ -5,7 +5,7 @@ import { getAxisRooms } from '../../lib/axisrooms';
 import type { Resort, RoomTypeAvailability } from '../../lib/axisrooms';
 import { TtlCache } from '../../lib/axisrooms/cache';
 import { ApiError } from '../../utils/apiError';
-import { nightsBetween } from '../booking/pricing';
+import { validateStayDates } from '../booking/dates';
 import { pricePlansForRoom, type ComposedCharge } from '../pricing/pricing.service';
 import { applyChannelPolicy } from '../inventory/inventory.service';
 
@@ -105,8 +105,8 @@ export async function searchAvailability(
   if (!config) throw ApiError.conflict('Agency has no commercial configuration');
   const markupPct = Number(config.markupPct);
 
-  const nights = nightsBetween(new Date(query.checkIn), new Date(query.checkOut));
-  if (nights <= 0) throw ApiError.badRequest('Check-out must be after check-in');
+  // Authoritative stay-date validation (no past dates, max stay, advance window).
+  const { checkIn: checkInDate, checkOut: checkOutDate, nights } = validateStayDates(query.checkIn, query.checkOut);
 
   const adults = query.adults ?? query.guests;
   const childAges = query.childAges;
@@ -121,8 +121,6 @@ export async function searchAvailability(
     availabilityCache.set(key, rooms);
   }
 
-  const checkInDate = new Date(query.checkIn);
-  const checkOutDate = new Date(query.checkOut);
   // v3 §3 — apply the B2B channel policy (stop-sell / caps / allotments) to the
   // live AxisRooms availability before display. Per-agency, so applied post-cache.
   rooms = await applyChannelPolicy(query.resortId, rooms, checkInDate, checkOutDate, agencyId);

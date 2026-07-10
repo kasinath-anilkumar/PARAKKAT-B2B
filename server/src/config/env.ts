@@ -38,6 +38,11 @@ const baseSchema = z.object({
     .string()
     .length(64, 'MFA_ENCRYPTION_KEY must be a 64-char hex string (32 bytes) for AES-256-GCM'),
 
+  // Master kill-switch: when true, MFA is OFF for everyone — no setup prompt, no
+  // second factor, even for users who previously enabled it. Flip back to false
+  // to restore the per-role enforcement below. Default false (secure).
+  MFA_DISABLED: boolEnv(false),
+
   // When true (default), ADMIN/VERIFIER must use MFA regardless of their
   // per-user setting. Set to false in dev to skip mandatory MFA for testing —
   // login then follows each user's own mfaEnabled flag. Keep true in prod.
@@ -109,6 +114,10 @@ const baseSchema = z.object({
   AXISROOMS_FORCE_DOWN: boolEnv(false),
   // Tentative-hold TTL for pay-first bookings (default 15 min, §10).
   BOOKING_HOLD_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  // Stay-date guardrails: no past check-in, a max stay length, and how far ahead
+  // a booking may be made. Enforced server-side (authoritative) on search + book.
+  BOOKING_MAX_STAY_NIGHTS: z.coerce.number().int().positive().default(30),
+  BOOKING_MAX_ADVANCE_DAYS: z.coerce.number().int().positive().default(365),
   // v3 §5.2 — max automatic AxisRooms rebook attempts before a commit-failed
   // booking is parked for manual admin resolution.
   REBOOK_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
