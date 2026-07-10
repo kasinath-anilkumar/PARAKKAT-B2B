@@ -1,0 +1,511 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  VERIFIER
+  AGENCY
+  AGENT
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum MfaMethod {
+  NONE
+  TOTP
+  EMAIL
+}
+
+enum OtpChannel {
+  TOTP
+  EMAIL
+}
+
+enum OtpPurpose {
+  MFA_LOGIN
+  MFA_SETUP
+}
+
+enum AgencyStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+// Full lifecycle per Instructions.md §7 / projectScope.md §4.4.
+// Phase 1 only creates the table; the state machine itself is built in Phase 2+.
+enum ApplicationLifecycleState {
+  DRAFT
+  VERIFICATION
+  REVIEW
+  APPROVED
+  COMMERCIAL_CONFIGURATION
+  ACTIVE
+  REJECTED
+  SUSPENDED
+}
+
+enum VerificationCheckType {
+  GST
+  PAN
+  AADHAAR_EKYC
+  BANK
+  DOCUMENT
+  ESIGN
+}
+
+enum VerificationStatus {
+  PENDING
+  IN_PROGRESS
+  PASSED
+  FAILED
+  MANUAL_REVIEW
+}
+
+enum DocumentType {
+  REGISTRATION_PROOF
+  ADDRESS_PROOF
+  AGREEMENT
+  SIGNED_AGREEMENT
+  OTHER
+}
+
+enum DocumentStatus {
+  UPLOADED
+  VERIFIED
+  REJECTED
+  SIGNED
+}
+
+enum PaymentMode {
+  PREPAY
+  CREDIT
+}
+
+// Booking lifecycle + unified credit gate (Instructions.md §10 / §4.11):
+//   DRAFT → (credit gate)
+//     within limit        → CONFIRMED_ON_CREDIT → COMMITTED
+//     over limit / prepay  → AWAITING_PAYMENT → PAID → CONFIRMED → COMMITTED
+// EXPIRED = tentative hold TTL lapsed; CANCELLED = reversed after commit.
+enum BookingState {
+  DRAFT
+  AWAITING_PAYMENT
+  CONFIRMED_ON_CREDIT
+  PAID
+  CONFIRMED
+  COMMITTED
+  CANCELLED
+  EXPIRED
+}
+
+// --- Finance (Phase 7) ---
+enum InvoiceStatus {
+  ISSUED // owed (credit) or awaiting payment
+  PAID
+  VOID
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+// INBOUND = collection from the agency; OUTBOUND = refund to the agency.
+enum PaymentDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CrsEventType {
+  BOOKING_OBLIGATION
+  PAYMENT
+  REFUND
+  CANCELLATION_CHARGE
+}
+
+enum CrsOutboxStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// Superset of Role for AuditLog attribution — automated/external actors too.
+// APPLICANT covers public self-service onboarding actions taken before any
+// User account exists (identified by the application, not a user id).
+enum ActorRole {
+  ADMIN
+  VERIFIER
+  AGENCY
+  AGENT
+  APPLICANT
+  SYSTEM
+  DIGIO
+}
+
+// ---------------------------------------------------------------------------
+// Auth / identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+
+  // Set for AGENCY/AGENT role users; null for ADMIN/VERIFIER.
+  agencyId String?
+  agency   Agency? @relation(fields: [agencyId], references: [id])
+
+  // Phase 2 seam: which AGENCY-role user created this AGENT-role user.
+  createdByUserId String?
+  createdBy       User?   @relation("UserCreatedBy", fields: [createdByUserId], references: [id])
+  createdUsers    User[]  @relation("UserCreatedBy")
+
+  mfaEnabled Boolean   @default(false)
+  mfaMethod  MfaMethod @default(NONE)
+  // AES-256-GCM ciphertext (utils/crypto.ts) — never stored or returned plaintext.
+  mfaSecret  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  refreshTokens           RefreshToken[]
+  otpCodes                OtpCode[]
+  uploadedDocuments       Document[]                @relation("DocumentUploadedBy")
+  decidedApplications     AgencyApplication[]       @relation("ApplicationDecidedBy")
+  commercialConfigUpdates CommercialConfiguration[] @relation("CommercialConfigUpdatedBy")
+  auditLogs               AuditLog[]
+  bookings                Booking[]                 @relation("BookingAgent")
+
+  @@index([agencyId])
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OtpCode {
+  id         String     @id @default(uuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel    OtpChannel
+  codeHash   String
+  purpose    OtpPurpose
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  @@index([userId, purpose])
+}
+
+// ---------------------------------------------------------------------------
+// Agency / onboarding (portal-owned; §12 of Instructions.md, minus Booking)
+// ---------------------------------------------------------------------------
+
+// Lightweight activated-agency record. Full self-service onboarding UI/flow is
+// Phase 2 — this table exists now so FK relations (User.agencyId, Document,
+// CommercialConfiguration) have somewhere to point.
+model Agency {
+  id            String             @id @default(uuid())
+  applicationId String?            @unique
+  application   AgencyApplication? @relation(fields: [applicationId], references: [id])
+  legalName     String
+  gstin         String
+  pan           String
+  status        AgencyStatus       @default(ACTIVE)
+  contactEmail  String
+  contactPhone  String
+  // Set when the agency is activated (agreement eSigned). An agency may exist
+  // from the commercial-config step before it can transact; activatedAt != null
+  // AND status == ACTIVE is the "operational" gate used by the booking layer.
+  activatedAt   DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  users                    User[]
+  documents                Document[]
+  commercialConfigurations CommercialConfiguration[]
+  bookings                 Booking[]
+  invoices                 Invoice[]
+  payments                 Payment[]
+
+  @@index([status])
+}
+
+// Captures a self-service registration through to decision (projectScope.md §5).
+// Capture fields are nullable because a Draft is resumable and may be filled
+// incrementally; completeness is enforced by Zod at submit time, not the DB.
+model AgencyApplication {
+  id        String  @id @default(uuid())
+  legalName String?
+  gstin     String?
+  pan       String?
+
+  // Registered business address.
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  country      String? @default("India")
+
+  // Business contact (distinct from the authorized representative).
+  businessContactEmail String?
+  businessContactPhone String?
+
+  // Authorized representative.
+  repName        String?
+  repDesignation String?
+  repEmail       String?
+  repMobile      String?
+  // Reference/token for Aadhaar eKYC — never the raw Aadhaar number.
+  repAadhaarRef  String?
+
+  // Bank details for penny-drop verification.
+  bankAccount   String?
+  ifsc          String?
+  accountHolder String?
+
+  // SHA-256 of the resume token handed to the applicant at creation. Lets a
+  // public applicant (no User account) resume/edit/submit their draft. Null
+  // for admin-initiated applications (exception path, Decision D7).
+  resumeTokenHash String?
+
+  lifecycleState ApplicationLifecycleState @default(DRAFT)
+  submittedAt    DateTime?
+  decidedAt      DateTime?
+  decision       String?
+  decisionReason String?
+  decidedById    String?
+  decidedBy      User?                     @relation("ApplicationDecidedBy", fields: [decidedById], references: [id])
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  agency        Agency?
+  verifications Verification[]
+  documents     Document[]
+
+  @@index([lifecycleState])
+  @@index([gstin])
+  @@index([pan])
+}
+
+model Verification {
+  id              String                @id @default(uuid())
+  applicationId   String
+  application     AgencyApplication     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  checkType       VerificationCheckType
+  status          VerificationStatus    @default(PENDING)
+  providerRef     String?
+  requestPayload  Json?
+  responsePayload Json?
+  initiatedAt     DateTime?
+  completedAt     DateTime?
+
+  @@index([applicationId, checkType])
+}
+
+model Document {
+  id            String             @id @default(uuid())
+  applicationId String?
+  application   AgencyApplication? @relation(fields: [applicationId], references: [id])
+  agencyId      String?
+  agency        Agency?            @relation(fields: [agencyId], references: [id])
+  docType       DocumentType
+  // Opaque key into the StorageProvider — never a public URL.
+  storageKey    String
+  checksum      String
+  status        DocumentStatus     @default(UPLOADED)
+  // Nullable: public applicants uploading proofs during onboarding have no
+  // User account yet. Set once an admin/agency user is the uploader.
+  uploadedById  String?
+  uploadedBy    User?              @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt    DateTime           @default(now())
+  // Original filename + mime, kept for admin review and download naming.
+  fileName      String?
+  contentType   String?
+
+  @@index([agencyId])
+  @@index([applicationId])
+}
+
+model CommercialConfiguration {
+  id            String      @id @default(uuid())
+  agencyId      String
+  agency        Agency      @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  tier          String
+  paymentMode   PaymentMode
+  creditLimit   Decimal     @db.Decimal(14, 2)
+  paymentTerms  String
+  markupPct     Decimal     @db.Decimal(5, 2)
+  effectiveFrom DateTime
+  updatedById   String
+  updatedBy     User        @relation("CommercialConfigUpdatedBy", fields: [updatedById], references: [id])
+  // Only one row per agency should have isCurrent=true; enforced at the
+  // service layer (transactional set-false-then-create), not a DB constraint.
+  isCurrent     Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+
+  @@index([agencyId, isCurrent])
+}
+
+// Portal-owned B2B booking record (Instructions.md §12). Resorts/rooms/
+// availability are NOT stored (read from AxisRooms); only the resolved
+// selection + prices + lifecycle live here. Stores BOTH base rate and resolved
+// agency price so invoices/refunds are reproducible if markup changes (§9).
+model Booking {
+  id            String @id @default(uuid())
+  // Shared correlation id carried into AxisRooms and (Phase 7) the CRS.
+  correlationId String @unique @default(uuid())
+  agencyId      String
+  agency        Agency @relation(fields: [agencyId], references: [id])
+  agentId       String
+  agent         User   @relation("BookingAgent", fields: [agentId], references: [id])
+
+  // AxisRooms references (opaque; no local master tables).
+  resortId     String
+  resortName   String
+  roomTypeId   String
+  roomTypeName String
+
+  checkIn  DateTime
+  checkOut DateTime
+  nights   Int
+  guests   Int
+
+  baseRate    Decimal     @db.Decimal(14, 2) // total base across the stay
+  agencyPrice Decimal     @db.Decimal(14, 2) // base × (1 + markup%)
+  markupPct   Decimal     @db.Decimal(5, 2) // snapshot at booking time
+  paymentMode PaymentMode // resolved branch: CREDIT (on-credit) or PREPAY (pay-first)
+
+  state         BookingState @default(DRAFT)
+  holdExpiresAt DateTime? // set while AWAITING_PAYMENT (tentative hold TTL)
+  axisRoomsRef  String? // reservation ref once committed to AxisRooms
+  paidAt        DateTime?
+  committedAt   DateTime?
+  cancelledAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoice  Invoice?
+  payments Payment[]
+
+  @@index([agencyId])
+  @@index([agentId])
+  @@index([state])
+}
+
+// ---------------------------------------------------------------------------
+// Finance (Phase 7). Portal owns invoices/AR; the CRS is the ledger of record
+// (portal posts events to it via the outbox). Amounts are the AGENCY price.
+// ---------------------------------------------------------------------------
+
+model Invoice {
+  id            String        @id @default(uuid())
+  number        String        @unique
+  agencyId      String
+  agency        Agency        @relation(fields: [agencyId], references: [id])
+  bookingId     String        @unique
+  booking       Booking       @relation(fields: [bookingId], references: [id])
+  correlationId String
+  amount        Decimal       @db.Decimal(14, 2)
+  paymentMode   PaymentMode // CREDIT invoices count toward AR until settled
+  status        InvoiceStatus @default(ISSUED)
+  dueDate       DateTime?
+  issuedAt      DateTime      @default(now())
+  paidAt        DateTime?
+
+  payments Payment[]
+
+  @@index([agencyId, status])
+}
+
+model Payment {
+  id            String           @id @default(uuid())
+  agencyId      String
+  agency        Agency           @relation(fields: [agencyId], references: [id])
+  bookingId     String?
+  booking       Booking?         @relation(fields: [bookingId], references: [id])
+  invoiceId     String?
+  invoice       Invoice?         @relation(fields: [invoiceId], references: [id])
+  correlationId String
+  amount        Decimal          @db.Decimal(14, 2)
+  direction     PaymentDirection @default(INBOUND)
+  status        PaymentStatus    @default(PENDING)
+  gateway       String           @default("airpay")
+  gatewayRef    String?
+  createdAt     DateTime         @default(now())
+  completedAt   DateTime?
+
+  @@index([agencyId])
+  @@index([gatewayRef])
+}
+
+// Outbox for CRS postings — written in the same transaction as the financial
+// change, delivered (and retried) by the finance worker. Idempotent on
+// (correlationId, eventType) at the CRS boundary.
+model CrsOutboxEvent {
+  id            String          @id @default(uuid())
+  eventType     CrsEventType
+  correlationId String
+  payload       Json
+  status        CrsOutboxStatus @default(PENDING)
+  attempts      Int             @default(0)
+  lastError     String?
+  createdAt     DateTime        @default(now())
+  sentAt        DateTime?
+
+  @@index([status])
+  @@index([correlationId])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — append-only, no update/delete exposed anywhere in the app.
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id            String    @id @default(uuid())
+  entityType    String
+  entityId      String
+  event         String
+  actorId       String?
+  actor         User?     @relation(fields: [actorId], references: [id])
+  actorRole     ActorRole
+  before        Json?
+  after         Json?
+  correlationId String?
+  createdAt     DateTime  @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}

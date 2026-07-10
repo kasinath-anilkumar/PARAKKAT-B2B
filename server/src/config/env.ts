@@ -1,0 +1,190 @@
+import dotenv from 'dotenv';
+import { z } from 'zod';
+
+// Load .env for dev/prod only. Under test, the test harness loads .env.test
+// first (setting NODE_ENV=test); loading .env here too would leak dev values
+// (e.g. MFA_ENFORCED) into the test environment.
+if (process.env.NODE_ENV !== 'test') {
+  dotenv.config();
+}
+
+/**
+ * Parses a boolean env var. NOTE: `z.coerce.boolean()` is unusable here — it
+ * does `Boolean(value)`, so the string "false" becomes `true`. This treats
+ * "false"/"0"/"no"/"off"/"" as false and "true"/"1"/"yes"/"on" as true.
+ */
+const boolEnv = (defaultVal: boolean) =>
+  z.preprocess((v) => {
+    if (v === undefined || v === '') return defaultVal;
+    if (typeof v === 'boolean') return v;
+    return ['true', '1', 'yes', 'on'].includes(String(v).trim().toLowerCase());
+  }, z.boolean());
+
+const baseSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  PORT: z.coerce.number().int().positive().default(4000),
+  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+
+  JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET must be at least 16 characters'),
+  JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET must be at least 16 characters'),
+  JWT_MFA_SECRET: z.string().min(16, 'JWT_MFA_SECRET must be at least 16 characters'),
+  ACCESS_TOKEN_TTL: z.string().default('15m'),
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  MFA_PENDING_TOKEN_TTL: z.string().default('5m'),
+
+  MFA_ENCRYPTION_KEY: z
+    .string()
+    .length(64, 'MFA_ENCRYPTION_KEY must be a 64-char hex string (32 bytes) for AES-256-GCM'),
+
+  // When true (default), ADMIN/VERIFIER must use MFA regardless of their
+  // per-user setting. Set to false in dev to skip mandatory MFA for testing —
+  // login then follows each user's own mfaEnabled flag. Keep true in prod.
+  MFA_ENFORCED: boolEnv(true),
+
+  STORAGE_PROVIDER: z.enum(['s3', 'local']).default('local'),
+  S3_BUCKET: z.string().optional(),
+  S3_REGION: z.string().optional(),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  S3_ENDPOINT: z.string().optional(),
+  S3_FORCE_PATH_STYLE: boolEnv(false),
+
+  MAILER_PROVIDER: z.enum(['resend', 'console']).default('console'),
+  RESEND_API_KEY: z.string().optional(),
+  MAIL_FROM: z.string().default('no-reply@parakkatjewels.com'),
+
+  SMS_PROVIDER: z.enum(['msg91', 'console']).default('console'),
+  MSG91_AUTH_KEY: z.string().optional(),
+
+  ADMIN_SEED_EMAIL: z.string().email().optional().or(z.literal('')),
+  ADMIN_SEED_PASSWORD: z.string().min(8).optional().or(z.literal('')),
+
+  SWAGGER_ENABLED: boolEnv(true),
+
+  // Optional CAPTCHA on public onboarding endpoints (§11). Off in dev.
+  CAPTCHA_ENABLED: boolEnv(false),
+  CAPTCHA_SECRET: z.string().optional(),
+
+  // Max upload size (bytes) for onboarding documents. Default 10 MB.
+  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+
+  // --- Digio KYB/eKYC (Phase 3) ---
+  // mock: no live calls; results are driven via the webhook endpoint / manual
+  // override. live: real Digio API (base URL + credentials required in prod).
+  DIGIO_PROVIDER: z.enum(['mock', 'live']).default('mock'),
+  DIGIO_BASE_URL: z.string().optional(),
+  DIGIO_CLIENT_ID: z.string().optional(),
+  DIGIO_CLIENT_SECRET: z.string().optional(),
+  // Shared secret used to HMAC-validate inbound Digio webhooks. Has a dev
+  // default so mock webhooks can be signed locally; required in production.
+  DIGIO_WEBHOOK_SECRET: z.string().min(8).default('dev-digio-webhook-secret'),
+  // Auto-progress an application VERIFICATION → REVIEW once all mandatory
+  // checks reach a terminal status (Decision D8). Configurable per §16.
+  VERIFICATION_AUTO_PROGRESS: boolEnv(true),
+
+  // --- Commercial / activation (Phase 4) ---
+  // Optional JSON overriding the built-in tier presets (§16 — presets must be
+  // configurable, not hardcoded). Shape: { "GOLD": { paymentMode, creditLimit,
+  // paymentTerms, markupPct }, ... }. Invalid JSON falls back to defaults.
+  TIERS_CONFIG_JSON: z.string().optional(),
+  // App base URL used to build eSign / activation links in emails.
+  APP_BASE_URL: z.string().default('http://localhost:5173'),
+
+  // --- Notifications (Phase 5) ---
+  // Send SMS alongside email for time-sensitive events (eSign, activation).
+  SMS_NOTIFICATIONS_ENABLED: boolEnv(false),
+
+  // --- Booking / AxisRooms (Phase 6) ---
+  AXISROOMS_PROVIDER: z.enum(['mock', 'live']).default('mock'),
+  AXISROOMS_BASE_URL: z.string().optional(),
+  AXISROOMS_API_KEY: z.string().optional(),
+  // Simulate AxisRooms downtime to exercise block-don't-queue behaviour.
+  AXISROOMS_FORCE_DOWN: boolEnv(false),
+  // Tentative-hold TTL for pay-first bookings (default 15 min, §10).
+  BOOKING_HOLD_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  // Short-TTL availability cache (seconds).
+  AVAILABILITY_CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(30),
+
+  // --- Finance / CRS / payments (Phase 7) ---
+  // CRS is the ledger of record; the portal posts financial events to it.
+  CRS_PROVIDER: z.enum(['mock', 'live']).default('mock'),
+  CRS_BASE_URL: z.string().optional(),
+  CRS_API_KEY: z.string().optional(),
+  // Payment gateway (Decision D2-a: portal collects, posts to CRS).
+  PAYMENT_PROVIDER: z.enum(['mock', 'airpay']).default('mock'),
+  AIRPAY_MERCHANT_ID: z.string().optional(),
+  AIRPAY_SECRET: z.string().optional(),
+  // HMAC secret validating inbound payment webhooks. Dev default; required in prod.
+  PAYMENT_WEBHOOK_SECRET: z.string().min(8).default('dev-payment-webhook-secret'),
+  // Deliver CRS outbox events synchronously after each financial change (dev),
+  // in addition to the retry worker. Off → rely on the worker only.
+  CRS_FLUSH_INLINE: boolEnv(true),
+  // Cancellation policy bands (Decision D4). JSON array of { minDaysBefore, chargePct }
+  // sorted desc by minDaysBefore; the first band whose minDaysBefore <= daysBefore applies.
+  CANCELLATION_POLICY_JSON: z.string().optional(),
+
+  // --- Hardening (Phase 8) ---
+  // Soft anomaly threshold: this many onboarding drafts from one IP within the
+  // window raises an audited alert (the hard block is the rate limiter).
+  ONBOARDING_ANOMALY_THRESHOLD: z.coerce.number().int().positive().default(5),
+  ONBOARDING_ANOMALY_WINDOW_MINUTES: z.coerce.number().int().positive().default(10),
+});
+
+const parsed = baseSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  // eslint-disable-next-line no-console
+  console.error('Invalid environment configuration:');
+  for (const issue of parsed.error.issues) {
+    // eslint-disable-next-line no-console
+    console.error(`  - ${issue.path.join('.')}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+
+const data = parsed.data;
+
+if (data.NODE_ENV === 'production') {
+  const productionErrors: string[] = [];
+  if (data.STORAGE_PROVIDER === 's3') {
+    if (!data.S3_BUCKET) productionErrors.push('S3_BUCKET is required when STORAGE_PROVIDER=s3');
+    if (!data.S3_REGION) productionErrors.push('S3_REGION is required when STORAGE_PROVIDER=s3');
+    if (!data.S3_ACCESS_KEY_ID)
+      productionErrors.push('S3_ACCESS_KEY_ID is required when STORAGE_PROVIDER=s3');
+    if (!data.S3_SECRET_ACCESS_KEY)
+      productionErrors.push('S3_SECRET_ACCESS_KEY is required when STORAGE_PROVIDER=s3');
+  }
+  if (data.MAILER_PROVIDER === 'resend' && !data.RESEND_API_KEY) {
+    productionErrors.push('RESEND_API_KEY is required when MAILER_PROVIDER=resend');
+  }
+  if (data.DIGIO_PROVIDER === 'live') {
+    if (!data.DIGIO_BASE_URL) productionErrors.push('DIGIO_BASE_URL is required when DIGIO_PROVIDER=live');
+    if (!data.DIGIO_CLIENT_ID) productionErrors.push('DIGIO_CLIENT_ID is required when DIGIO_PROVIDER=live');
+    if (!data.DIGIO_CLIENT_SECRET)
+      productionErrors.push('DIGIO_CLIENT_SECRET is required when DIGIO_PROVIDER=live');
+  }
+  if (data.DIGIO_WEBHOOK_SECRET === 'dev-digio-webhook-secret') {
+    productionErrors.push('DIGIO_WEBHOOK_SECRET must be set to a real secret in production');
+  }
+  if (data.PAYMENT_WEBHOOK_SECRET === 'dev-payment-webhook-secret') {
+    productionErrors.push('PAYMENT_WEBHOOK_SECRET must be set to a real secret in production');
+  }
+  if (data.PAYMENT_PROVIDER === 'airpay') {
+    if (!data.AIRPAY_MERCHANT_ID) productionErrors.push('AIRPAY_MERCHANT_ID is required when PAYMENT_PROVIDER=airpay');
+    if (!data.AIRPAY_SECRET) productionErrors.push('AIRPAY_SECRET is required when PAYMENT_PROVIDER=airpay');
+  }
+  if (productionErrors.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error('Invalid production environment configuration:');
+    for (const err of productionErrors) {
+      // eslint-disable-next-line no-console
+      console.error(`  - ${err}`);
+    }
+    process.exit(1);
+  }
+}
+
+export const env = data;
+export type Env = typeof env;
