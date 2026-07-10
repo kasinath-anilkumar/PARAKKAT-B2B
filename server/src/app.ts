@@ -36,7 +36,23 @@ export function createApp(): Express {
   app.use(helmet());
   app.use(
     cors({
-      origin: env.CORS_ORIGIN.split(',').map((s) => s.trim()),
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        const patterns = env.CORS_ORIGIN.split(',').map((s) => s.trim());
+        const isAllowed = patterns.some((pattern) => {
+          if (pattern.includes('*')) {
+            const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+            const regexStr = '^' + escaped.replace(/\*/g, '[a-zA-Z0-9-]+') + '$';
+            const regex = new RegExp(regexStr, 'i');
+            return regex.test(origin);
+          }
+          return pattern === origin;
+        });
+        callback(null, isAllowed);
+      },
       credentials: true,
     }),
   );
