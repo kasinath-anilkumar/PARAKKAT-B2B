@@ -53,13 +53,18 @@ const baseSchema = z.object({
   // v3 §10.2 — minimum password length (policy also requires upper/lower/digit/symbol).
   PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).max(128).default(10),
 
-  STORAGE_PROVIDER: z.enum(['s3', 'local']).default('local'),
+  STORAGE_PROVIDER: z.enum(['supabase', 's3', 'local']).default('local'),
   S3_BUCKET: z.string().optional(),
   S3_REGION: z.string().optional(),
   S3_ACCESS_KEY_ID: z.string().optional(),
   S3_SECRET_ACCESS_KEY: z.string().optional(),
   S3_ENDPOINT: z.string().optional(),
   S3_FORCE_PATH_STYLE: boolEnv(false),
+  // Supabase Storage (STORAGE_PROVIDER=supabase). Private bucket; served via
+  // short-lived signed URLs. Uses the service-role key — server-side only.
+  SUPABASE_URL: z.string().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().optional(),
 
   MAILER_PROVIDER: z.enum(['resend', 'console']).default('console'),
   RESEND_API_KEY: z.string().optional(),
@@ -75,6 +80,9 @@ const baseSchema = z.object({
 
   // Optional CAPTCHA on public onboarding endpoints (§11). Off in dev.
   CAPTCHA_ENABLED: boolEnv(false),
+  // Provider whose siteverify endpoint validates the token. Turnstile is the
+  // privacy-friendly default; hCaptcha and reCAPTCHA are drop-in alternatives.
+  CAPTCHA_PROVIDER: z.enum(['turnstile', 'hcaptcha', 'recaptcha']).default('turnstile'),
   CAPTCHA_SECRET: z.string().optional(),
 
   // Max upload size (bytes) for onboarding documents. Default 10 MB.
@@ -196,6 +204,13 @@ if (data.NODE_ENV === 'production') {
     if (!data.S3_SECRET_ACCESS_KEY)
       productionErrors.push('S3_SECRET_ACCESS_KEY is required when STORAGE_PROVIDER=s3');
   }
+  if (data.STORAGE_PROVIDER === 'supabase') {
+    if (!data.SUPABASE_URL) productionErrors.push('SUPABASE_URL is required when STORAGE_PROVIDER=supabase');
+    if (!data.SUPABASE_SERVICE_ROLE_KEY)
+      productionErrors.push('SUPABASE_SERVICE_ROLE_KEY is required when STORAGE_PROVIDER=supabase');
+    if (!data.SUPABASE_STORAGE_BUCKET)
+      productionErrors.push('SUPABASE_STORAGE_BUCKET is required when STORAGE_PROVIDER=supabase');
+  }
   if (data.MAILER_PROVIDER === 'resend' && !data.RESEND_API_KEY) {
     productionErrors.push('RESEND_API_KEY is required when MAILER_PROVIDER=resend');
   }
@@ -214,6 +229,9 @@ if (data.NODE_ENV === 'production') {
   if (data.PAYMENT_PROVIDER === 'airpay') {
     if (!data.AIRPAY_MERCHANT_ID) productionErrors.push('AIRPAY_MERCHANT_ID is required when PAYMENT_PROVIDER=airpay');
     if (!data.AIRPAY_SECRET) productionErrors.push('AIRPAY_SECRET is required when PAYMENT_PROVIDER=airpay');
+  }
+  if (data.CAPTCHA_ENABLED && !data.CAPTCHA_SECRET) {
+    productionErrors.push('CAPTCHA_SECRET is required when CAPTCHA_ENABLED=true');
   }
   if (productionErrors.length > 0) {
     // eslint-disable-next-line no-console

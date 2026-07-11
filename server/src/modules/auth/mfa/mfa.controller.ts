@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
-import { env } from '../../../config/env';
 import { prisma } from '../../../lib/prisma';
 import { ApiError } from '../../../utils/apiError';
 import { recordAuditLog } from '../../audit/audit.service';
+import { isMfaRequiredForRole } from '../auth.service';
 import * as mfaService from './mfa.service';
 
 export async function setupTotp(req: Request, res: Response): Promise<void> {
@@ -29,8 +29,9 @@ export async function confirmEmailSetup(req: Request, res: Response): Promise<vo
 
 export async function disableMfa(req: Request, res: Response): Promise<void> {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } });
-  if (env.MFA_ENFORCED && (user.role === 'ADMIN' || user.role === 'VERIFIER')) {
-    throw ApiError.forbidden('MFA is mandatory for this role and cannot be disabled');
+  // Cannot opt out if MFA is force-enrolled for this role by the current policy.
+  if (isMfaRequiredForRole(user.role, false)) {
+    throw ApiError.forbidden('MFA is mandatory for your role and cannot be disabled');
   }
   await prisma.$transaction(async (tx) => {
     await tx.user.update({

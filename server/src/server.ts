@@ -4,6 +4,7 @@ import { createApp } from './app';
 import { logger } from './lib/logger';
 import { prisma } from './lib/prisma';
 import { initRealtime } from './lib/realtime';
+import { loadSettings } from './modules/settings/settings.service';
 
 const app = createApp();
 const server = http.createServer(app);
@@ -11,6 +12,9 @@ initRealtime(server);
 
 server.listen(env.PORT, () => {
   logger.info(`API listening on port ${env.PORT} (${env.NODE_ENV})`);
+  // Prime the settings cache (company profile, maintenance flag, booking window)
+  // so hot paths read persisted values without a per-request DB hit.
+  void loadSettings();
 });
 
 async function shutdown(signal: string): Promise<void> {

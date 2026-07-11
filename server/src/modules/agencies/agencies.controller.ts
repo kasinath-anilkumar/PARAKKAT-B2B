@@ -13,6 +13,24 @@ export async function getById(req: Request, res: Response): Promise<void> {
   res.status(200).json(agency);
 }
 
+/** An agency user's own profile + commercial terms + documents. */
+export async function myProfile(req: Request, res: Response): Promise<void> {
+  res.status(200).json(await agenciesService.getMyAgencyProfile(req.user!.agencyId!));
+}
+
+export async function getDetail(req: Request, res: Response): Promise<void> {
+  const agency = await agenciesService.getAgencyDetail(req.params.id);
+  res.status(200).json(agency);
+}
+
+export async function update(req: Request, res: Response): Promise<void> {
+  const agency = await agenciesService.updateAgency(req.params.id, req.body, {
+    actorId: req.user!.id,
+    actorRole: req.user!.role,
+  });
+  res.status(200).json(agency);
+}
+
 export async function suspend(req: Request, res: Response): Promise<void> {
   const agency = await agenciesService.suspendAgency(req.params.id, {
     actorId: req.user!.id,
@@ -30,7 +48,28 @@ export async function reactivate(req: Request, res: Response): Promise<void> {
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const agency = await agenciesService.createAgency(req.body, {
+  const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+  const registrationProof = files?.['registrationProof']?.[0];
+  const addressProof = files?.['addressProof']?.[0];
+
+  const docs = {
+    registrationProof: registrationProof
+      ? {
+          buffer: registrationProof.buffer,
+          originalname: registrationProof.originalname,
+          mimetype: registrationProof.mimetype,
+        }
+      : undefined,
+    addressProof: addressProof
+      ? {
+          buffer: addressProof.buffer,
+          originalname: addressProof.originalname,
+          mimetype: addressProof.mimetype,
+        }
+      : undefined,
+  };
+
+  const agency = await agenciesService.createAgency(req.body, docs, {
     actorId: req.user!.id,
     actorRole: req.user!.role,
   });
@@ -43,4 +82,17 @@ export async function remove(req: Request, res: Response): Promise<void> {
     actorRole: req.user!.role,
   });
   res.status(200).json(result);
+}
+
+export async function updateCommercialConfig(req: Request, res: Response): Promise<void> {
+  const configuration = await agenciesService.updateAgencyCommercialConfig(
+    req.params.id,
+    req.body.tier,
+    {
+      actorId: req.user!.id,
+      actorRole: req.user!.role,
+    },
+    { markupPct: req.body.markupPct },
+  );
+  res.status(200).json(configuration);
 }

@@ -30,6 +30,36 @@ export async function listAllAgents(): Promise<Agent[]> {
   return (await httpClient.get('/agents/all')).data.items;
 }
 
+export interface AgentBookingSummary {
+  id: string;
+  resortName: string;
+  checkIn: string;
+  checkOut: string;
+  agencyPrice: number;
+  state: string;
+  createdAt: string;
+}
+
+export interface AgentActivityEntry {
+  event: string;
+  actorRole: string;
+  createdAt: string;
+}
+
+export interface AgentDetail extends Agent {
+  agencyName: string;
+  mfaEnabled: boolean;
+  mustChangePassword: boolean;
+  createdBy: { name: string | null; email: string } | null;
+  stats: { totalBookings: number; confirmedBookings: number; cancelledBookings: number; totalRevenue: number };
+  recentBookings: AgentBookingSummary[];
+  recentActivity: AgentActivityEntry[];
+}
+
+export async function getAgentDetail(id: string): Promise<AgentDetail> {
+  return (await httpClient.get(`/agents/${id}`)).data;
+}
+
 export interface CreateAgentInput {
   name: string;
   email: string;

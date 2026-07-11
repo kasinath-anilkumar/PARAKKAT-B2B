@@ -1,8 +1,8 @@
 import type { Role, User } from '@prisma/client';
-import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { ApiError } from '../../utils/apiError';
 import { recordAuditLogSafe } from '../audit/audit.service';
+import { isMaintenanceMode, getMfaPolicy } from '../settings/settings.service';
 import { hashPassword, verifyPassword } from './password.service';
 import { assertStrongPassword } from './passwordPolicy';
 import {
@@ -18,16 +18,17 @@ import {
 import { sendLoginEmailOtp, verifyEmailLoginCode, verifyTotpLoginCode } from './mfa/mfa.service';
 
 /**
- * v3 §10.2 — mandatory-MFA matrix: ADMIN/VERIFIER (MFA_ENFORCED) and AGENCY
- * principals (MFA_ENFORCE_AGENCY) must use MFA; AGENT is opt-in unless
- * MFA_ENFORCE_AGENT is set. Anyone else follows their own mfaEnabled flag.
+ * v3 §10.2 — mandatory-MFA matrix, now admin-configurable at runtime (System
+ * Settings → Security). Master switch off ⇒ MFA never required. Otherwise
+ * ADMIN/VERIFIER, AGENCY and AGENT are each enforced per their flag; anyone not
+ * force-enrolled still follows their own opt-in mfaEnabled flag.
  */
 export function isMfaRequiredForRole(role: Role, mfaEnabled: boolean): boolean {
-  // Master kill-switch — MFA fully disabled (re-enable by unsetting MFA_DISABLED).
-  if (env.MFA_DISABLED) return false;
-  if (env.MFA_ENFORCED && (role === 'ADMIN' || role === 'VERIFIER')) return true;
-  if (env.MFA_ENFORCE_AGENCY && role === 'AGENCY') return true;
-  if (env.MFA_ENFORCE_AGENT && role === 'AGENT') return true;
+  const policy = getMfaPolicy();
+  if (!policy.mfaEnabled) return false; // master switch off
+  if (policy.enforceAdmin && (role === 'ADMIN' || role === 'VERIFIER')) return true;
+  if (policy.enforceAgency && role === 'AGENCY') return true;
+  if (policy.enforceAgent && role === 'AGENT') return true;
   return mfaEnabled;
 }
 
@@ -90,6 +91,19 @@ export async function login(
       actorRole: user.role,
     });
     throw ApiError.forbidden('This account has been suspended');
+  }
+
+  // Maintenance mode (System Settings → Portal): only staff (ADMIN/VERIFIER) may
+  // sign in; agency/agent logins are blocked until it is turned off.
+  if (isMaintenanceMode() && user.role !== 'ADMIN' && user.role !== 'VERIFIER') {
+    await recordAuditLogSafe({
+      entityType: 'User',
+      entityId: user.id,
+      event: 'LOGIN_BLOCKED_MAINTENANCE',
+      actorId: user.id,
+      actorRole: user.role,
+    });
+    throw ApiError.forbidden('The portal is under maintenance. Please try again later.');
   }
 
   const mfaRequired = isMfaRequiredForRole(user.role, user.mfaEnabled);

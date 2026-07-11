@@ -23,6 +23,10 @@ export async function listAll(_req: Request, res: Response): Promise<void> {
   res.json({ items: await agentsService.listAllAgents() });
 }
 
+export async function getOne(req: Request, res: Response): Promise<void> {
+  res.json(await agentsService.getAgentDetail(req.params.id, actorOf(req.user!)));
+}
+
 export async function create(req: Request, res: Response): Promise<void> {
   const result = await agentsService.createAgent(req.body, actorOf(req.user!));
   res.status(201).json(result);

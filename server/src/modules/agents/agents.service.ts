@@ -68,6 +68,63 @@ async function loadAgent(agentId: string, actor: AgentActor) {
   return agent;
 }
 
+export async function getAgentDetail(agentId: string, actor: AgentActor) {
+  await loadAgent(agentId, actor);
+
+  const [agent, bookings, recentBookings, recentActivity] = await Promise.all([
+    prisma.user.findUniqueOrThrow({
+      where: { id: agentId },
+      select: {
+        ...AGENT_SELECT,
+        mfaEnabled: true,
+        mustChangePassword: true,
+        agency: { select: { id: true, legalName: true } },
+        createdBy: { select: { name: true, email: true } },
+      },
+    }),
+    prisma.booking.findMany({
+      where: { agentId },
+      select: { state: true, agencyPrice: true },
+    }),
+    prisma.booking.findMany({
+      where: { agentId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: { id: true, resortName: true, checkIn: true, checkOut: true, agencyPrice: true, state: true, createdAt: true },
+    }),
+    prisma.auditLog.findMany({
+      where: { entityType: 'User', entityId: agentId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: { event: true, actorRole: true, createdAt: true },
+    }),
+  ]);
+
+  const cancelledStates = new Set(['CANCELLED', 'EXPIRED']);
+  const revenueStates = new Set(['CONFIRMED_ON_CREDIT', 'PAID', 'CONFIRMED', 'COMMITTED']);
+  const stats = bookings.reduce(
+    (acc, b) => {
+      if (cancelledStates.has(b.state)) acc.cancelledBookings += 1;
+      if (revenueStates.has(b.state)) {
+        acc.confirmedBookings += 1;
+        acc.totalRevenue += Number(b.agencyPrice);
+      }
+      return acc;
+    },
+    { totalBookings: bookings.length, confirmedBookings: 0, cancelledBookings: 0, totalRevenue: 0 },
+  );
+
+  const { _count, agency, createdBy, ...rest } = agent;
+  return {
+    ...rest,
+    agencyName: agency?.legalName ?? '—',
+    createdBy: createdBy ?? null,
+    stats,
+    recentBookings: recentBookings.map((b) => ({ ...b, agencyPrice: Number(b.agencyPrice) })),
+    recentActivity,
+  };
+}
+
 export interface CreateAgentInput {
   name: string;
   email: string;

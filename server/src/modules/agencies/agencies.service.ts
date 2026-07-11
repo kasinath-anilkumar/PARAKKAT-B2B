@@ -1,10 +1,17 @@
 import type { ActorRole } from '@prisma/client';
+import crypto from 'node:crypto';
+import { getStorage } from '../../lib/storage';
 import { prisma } from '../../lib/prisma';
 import { broadcast } from '../../lib/realtime';
 import { ApiError } from '../../utils/apiError';
-import { recordAuditLogSafe } from '../audit/audit.service';
+import { recordAuditLog, recordAuditLogSafe } from '../audit/audit.service';
 import { transitionApplication } from '../lifecycle/lifecycle.service';
 import { notify } from '../notifications/notification.service';
+import { generateStrongPassword } from '../auth/passwordPolicy';
+import { hashPassword } from '../auth/password.service';
+import { env } from '../../config/env';
+import { getTierPreset } from '../commercial/tiers';
+import { resolveCommercialTerms } from '../commercial/commercial.mapping';
 
 interface Actor {
   actorId: string;
@@ -13,28 +20,170 @@ interface Actor {
 
 export interface CreateAgencyInput {
   legalName: string;
-  gstin: string;
+  gstin?: string;
   pan: string;
   contactEmail: string;
   contactPhone: string;
+  tier: string;
+  isIndependent?: boolean;
+}
+
+export interface AgencyDocsInput {
+  registrationProof?: { buffer: Buffer; originalname: string; mimetype: string };
+  addressProof?: { buffer: Buffer; originalname: string; mimetype: string };
 }
 
 /**
  * Admin-initiated agency creation (Decision D7 exception path) — bypasses
  * self-service onboarding to create an already-active agency directly.
  */
-export async function createAgency(input: CreateAgencyInput, actor: Actor) {
-  const agency = await prisma.agency.create({
-    data: { ...input, status: 'ACTIVE', activatedAt: new Date() },
+export async function createAgency(
+  input: CreateAgencyInput,
+  docs: AgencyDocsInput,
+  actor: Actor,
+) {
+  const preset = getTierPreset(input.tier);
+  if (!preset) {
+    throw ApiError.badRequest(`Unknown tier: ${input.tier}`);
+  }
+  const terms = resolveCommercialTerms(preset);
+
+  const { agency, temporaryPassword } = await prisma.$transaction(async (tx) => {
+    // 1. Create the dummy/linked AgencyApplication record
+    const app = await tx.agencyApplication.create({
+      data: {
+        legalName: input.legalName,
+        gstin: input.gstin || null,
+        pan: input.pan,
+        businessContactEmail: input.contactEmail,
+        businessContactPhone: input.contactPhone,
+        isIndependent: !!input.isIndependent,
+        lifecycleState: 'ACTIVE',
+        submittedAt: new Date(),
+        decidedAt: new Date(),
+        decision: 'APPROVED',
+      },
+    });
+
+    // 2. Create the Agency record
+    const createdAgency = await tx.agency.create({
+      data: {
+        applicationId: app.id,
+        legalName: input.legalName,
+        gstin: input.gstin || '',
+        pan: input.pan,
+        isIndependent: !!input.isIndependent,
+        contactEmail: input.contactEmail,
+        contactPhone: input.contactPhone,
+        status: 'ACTIVE',
+        activatedAt: new Date(),
+      },
+    });
+
+    // 3. Create default CommercialConfiguration
+    await tx.commercialConfiguration.create({
+      data: {
+        agencyId: createdAgency.id,
+        tier: input.tier.toUpperCase(),
+        paymentMode: terms.paymentMode,
+        creditLimit: terms.creditLimit,
+        paymentTerms: terms.paymentTerms,
+        markupPct: terms.markupPct,
+        effectiveFrom: new Date(),
+        updatedById: actor.actorId,
+        isCurrent: true,
+      },
+    });
+
+    // 4. Upload KYC documents if provided
+    if (docs.registrationProof) {
+      const file = docs.registrationProof;
+      const checksum = crypto.createHash('sha256').update(file.buffer).digest('hex');
+      const storageKey = `applications/${app.id}/${crypto.randomUUID()}-${file.originalname}`;
+      await getStorage().put(storageKey, file.buffer, file.mimetype);
+      await tx.document.create({
+        data: {
+          applicationId: app.id,
+          agencyId: createdAgency.id,
+          docType: 'REGISTRATION_PROOF',
+          storageKey,
+          checksum,
+          status: 'UPLOADED',
+          uploadedById: actor.actorId,
+          fileName: file.originalname,
+          contentType: file.mimetype,
+        },
+      });
+    }
+
+    if (docs.addressProof) {
+      const file = docs.addressProof;
+      const checksum = crypto.createHash('sha256').update(file.buffer).digest('hex');
+      const storageKey = `applications/${app.id}/${crypto.randomUUID()}-${file.originalname}`;
+      await getStorage().put(storageKey, file.buffer, file.mimetype);
+      await tx.document.create({
+        data: {
+          applicationId: app.id,
+          agencyId: createdAgency.id,
+          docType: 'ADDRESS_PROOF',
+          storageKey,
+          checksum,
+          status: 'UPLOADED',
+          uploadedById: actor.actorId,
+          fileName: file.originalname,
+          contentType: file.mimetype,
+        },
+      });
+    }
+
+    // 5. Create the initial agency user (role = AGENCY)
+    const agencyUserEmail = createdAgency.contactEmail;
+    const existing = await tx.user.findUnique({ where: { email: agencyUserEmail } });
+    let tempPassword = '';
+    if (!existing) {
+      tempPassword = generateStrongPassword(14);
+      const passwordHash = await hashPassword(tempPassword);
+      const user = await tx.user.create({
+        data: {
+          email: agencyUserEmail,
+          passwordHash,
+          role: 'AGENCY',
+          agencyId: createdAgency.id,
+          mustChangePassword: true,
+        },
+      });
+      await recordAuditLog({
+        entityType: 'User',
+        entityId: user.id,
+        event: 'AGENCY_USER_CREATED',
+        actorId: actor.actorId,
+        actorRole: actor.actorRole,
+        after: { email: agencyUserEmail, agencyId: createdAgency.id },
+      }, tx);
+    }
+
+    // 6. Record the agency creation audit log
+    await recordAuditLog({
+      entityType: 'Agency',
+      entityId: createdAgency.id,
+      event: 'AGENCY_CREATED_BY_ADMIN',
+      actorId: actor.actorId,
+      actorRole: actor.actorRole,
+      after: { legalName: createdAgency.legalName, gstin: createdAgency.gstin, tier: input.tier },
+    }, tx);
+
+    return { agency: createdAgency, temporaryPassword: tempPassword || undefined };
   });
-  await recordAuditLogSafe({
-    entityType: 'Agency',
-    entityId: agency.id,
-    event: 'AGENCY_CREATED_BY_ADMIN',
-    actorId: actor.actorId,
-    actorRole: actor.actorRole,
-    after: { legalName: agency.legalName, gstin: agency.gstin },
-  });
+
+  // 5. Send notification with credentials
+  if (temporaryPassword) {
+    await notify(
+      { event: 'AGENCY_ACTIVATED', loginUrl: env.APP_BASE_URL, temporaryPassword },
+      { email: agency.contactEmail, phone: agency.contactPhone },
+      { entityType: 'Agency', entityId: agency.id },
+    );
+  }
+
   broadcast(['agencies']);
   return agency;
 }
@@ -93,11 +242,215 @@ export async function listAgencies({ page, pageSize }: ListAgenciesParams) {
 }
 
 export async function getAgencyById(id: string) {
-  const agency = await prisma.agency.findUnique({ where: { id } });
+  const agency = await prisma.agency.findUnique({
+    where: { id },
+    include: { commercialConfigurations: { where: { isCurrent: true } } },
+  });
   if (!agency) {
     throw ApiError.notFound('Agency not found');
   }
   return agency;
+}
+
+/** An agency's own profile + current commercial terms + KYC documents (AGENCY self-view). */
+export async function getMyAgencyProfile(agencyId: string) {
+  const agency = await prisma.agency.findUniqueOrThrow({
+    where: { id: agencyId },
+    select: {
+      id: true,
+      legalName: true,
+      gstin: true,
+      pan: true,
+      isIndependent: true,
+      status: true,
+      contactEmail: true,
+      contactPhone: true,
+      activatedAt: true,
+      createdAt: true,
+      commercialConfigurations: {
+        where: { isCurrent: true },
+        take: 1,
+        select: { tier: true, paymentMode: true, creditLimit: true, paymentTerms: true, markupPct: true },
+      },
+      documents: {
+        select: { id: true, docType: true, fileName: true, status: true, uploadedAt: true },
+        orderBy: { uploadedAt: 'desc' },
+      },
+    },
+  });
+  const { commercialConfigurations, ...rest } = agency;
+  return { ...rest, commercial: commercialConfigurations[0] ?? null };
+}
+
+/**
+ * Rich admin view of a single agency: profile, current commercial terms, its
+ * users and KYC documents, plus a financial roll-up (bookings, invoiced, paid,
+ * outstanding AR). Backs the admin agency detail page.
+ */
+export async function getAgencyDetail(id: string) {
+  const agency = await prisma.agency.findUnique({
+    where: { id },
+    include: {
+      commercialConfigurations: { where: { isCurrent: true }, take: 1 },
+      users: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          status: true,
+          canBook: true,
+          canCancel: true,
+          canModify: true,
+          canViewReports: true,
+          createdAt: true,
+        },
+      },
+      documents: {
+        orderBy: { uploadedAt: 'desc' },
+        select: {
+          id: true,
+          docType: true,
+          status: true,
+          fileName: true,
+          uploadedAt: true,
+        },
+      },
+    },
+  });
+  if (!agency) {
+    throw ApiError.notFound('Agency not found');
+  }
+
+  const [bookings, invoiceAgg, paymentAgg] = await Promise.all([
+    prisma.booking.count({ where: { agencyId: id } }),
+    prisma.invoice.aggregate({
+      where: { agencyId: id },
+      _sum: { amount: true, amountPaid: true },
+      _count: true,
+    }),
+    prisma.payment.aggregate({
+      where: { agencyId: id, direction: 'INBOUND', status: 'SUCCEEDED' },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const invoiced = Number(invoiceAgg._sum.amount ?? 0);
+  const settled = Number(invoiceAgg._sum.amountPaid ?? 0);
+
+  const stats = {
+    bookings,
+    invoices: invoiceAgg._count,
+    invoiced,
+    paid: Number(paymentAgg._sum.amount ?? 0),
+    outstanding: Math.max(0, invoiced - settled),
+  };
+
+  return { ...agency, stats };
+}
+
+export interface UpdateAgencyInput {
+  legalName?: string;
+  gstin?: string;
+  pan?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+}
+
+/**
+ * Admin edit of an agency's core profile fields. Commercial terms and status
+ * have their own dedicated endpoints; this only touches identity/contact data.
+ */
+export async function updateAgency(
+  agencyId: string,
+  input: UpdateAgencyInput,
+  actor: Actor,
+) {
+  const agency = await prisma.agency.findUnique({ where: { id: agencyId } });
+  if (!agency) throw ApiError.notFound('Agency not found');
+
+  const data: UpdateAgencyInput = {};
+  for (const key of ['legalName', 'gstin', 'pan', 'contactEmail', 'contactPhone'] as const) {
+    if (input[key] !== undefined) data[key] = input[key];
+  }
+  if (Object.keys(data).length === 0) {
+    throw ApiError.badRequest('No editable fields provided');
+  }
+
+  const updated = await prisma.agency.update({ where: { id: agencyId }, data });
+  await recordAuditLogSafe({
+    entityType: 'Agency',
+    entityId: agencyId,
+    event: 'AGENCY_UPDATED',
+    actorId: actor.actorId,
+    actorRole: actor.actorRole,
+    before: {
+      legalName: agency.legalName,
+      gstin: agency.gstin,
+      pan: agency.pan,
+      contactEmail: agency.contactEmail,
+      contactPhone: agency.contactPhone,
+    },
+    after: data as Record<string, string>,
+  });
+  broadcast(['agencies'], { agencyId });
+  return updated;
+}
+
+export async function updateAgencyCommercialConfig(
+  agencyId: string,
+  tier: string,
+  actor: Actor,
+  overrides?: { markupPct?: number },
+) {
+  const agency = await prisma.agency.findUnique({ where: { id: agencyId } });
+  if (!agency) throw ApiError.notFound('Agency not found');
+
+  const preset = getTierPreset(tier);
+  if (!preset) {
+    throw ApiError.badRequest(`Unknown tier: ${tier}`);
+  }
+  const terms = resolveCommercialTerms(preset);
+
+  // v4 §1 — per-agency markup override ("personal bias"): the effective markup is
+  // the tier default unless the admin sets an explicit per-agency value.
+  const markupPct = overrides?.markupPct ?? terms.markupPct;
+  if (markupPct < 0 || markupPct > 100) {
+    throw ApiError.badRequest('Markup must be between 0 and 100%');
+  }
+
+  const configuration = await prisma.$transaction(async (tx) => {
+    await tx.commercialConfiguration.updateMany({
+      where: { agencyId, isCurrent: true },
+      data: { isCurrent: false },
+    });
+    const created = await tx.commercialConfiguration.create({
+      data: {
+        agencyId,
+        tier: tier.toUpperCase(),
+        paymentMode: terms.paymentMode,
+        creditLimit: terms.creditLimit,
+        paymentTerms: terms.paymentTerms,
+        markupPct,
+        effectiveFrom: new Date(),
+        updatedById: actor.actorId,
+        isCurrent: true,
+      },
+    });
+    await recordAuditLog({
+      entityType: 'CommercialConfiguration',
+      entityId: created.id,
+      event: 'COMMERCIAL_CONFIG_UPDATED',
+      actorId: actor.actorId,
+      actorRole: actor.actorRole,
+      after: { tier: created.tier, ...terms, markupPct, markupOverridden: overrides?.markupPct != null },
+    }, tx);
+    return created;
+  });
+
+  broadcast(['agencies'], { agencyId });
+  return configuration;
 }
 
 /**

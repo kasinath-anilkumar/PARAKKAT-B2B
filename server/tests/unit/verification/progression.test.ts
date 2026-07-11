@@ -45,4 +45,16 @@ describe('decideProgression', () => {
       ),
     ).toEqual({ action: 'progress_flagged' });
   });
+
+  it('progresses cleanly for independent agent when all 4 checks passed', () => {
+    expect(
+      decideProgression(statuses('PASSED', 'PASSED', 'PASSED', 'PASSED'), 4),
+    ).toEqual({ action: 'progress_clean' });
+  });
+
+  it('waits for independent agent when only 3 checks passed', () => {
+    expect(
+      decideProgression(statuses('PASSED', 'PASSED', 'PASSED'), 4),
+    ).toEqual({ action: 'wait' });
+  });
 });

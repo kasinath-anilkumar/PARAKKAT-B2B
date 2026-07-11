@@ -54,6 +54,9 @@ export interface AgencySummary {
     outstanding: number;
     creditLimit: number;
     available: number;
+    todayBookings: number;
+    upcomingCheckIns: number;
+    activeAgents: number;
   };
   bookingsByStatus: StatusCount[];
   series: AgencySeriesPoint[];

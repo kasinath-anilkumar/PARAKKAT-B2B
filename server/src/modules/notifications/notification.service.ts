@@ -1,4 +1,6 @@
+import type { NotificationAudience } from '@prisma/client';
 import { env } from '../../config/env';
+import { prisma } from '../../lib/prisma';
 import { getMailer } from '../../lib/mailer';
 import { getSms } from '../../lib/sms';
 import { getWhatsApp } from '../../lib/whatsapp';
@@ -111,4 +113,107 @@ export async function notify(
     return;
   }
   await deliverNotification({ payload, recipient, ref });
+  await persistNotification(payload, ref);
+}
+
+/** Resolves which inbox a notification belongs to from its entity ref. */
+async function resolveTarget(ref: EntityRef): Promise<{ audience: NotificationAudience; agencyId: string | null } | null> {
+  switch (ref.entityType) {
+    case 'Agency':
+      return { audience: 'AGENCY', agencyId: ref.entityId };
+    case 'Invoice': {
+      const inv = await prisma.invoice.findUnique({ where: { id: ref.entityId }, select: { agencyId: true } });
+      return inv ? { audience: 'AGENCY', agencyId: inv.agencyId } : null;
+    }
+    case 'Booking': {
+      const b = await prisma.booking.findUnique({ where: { id: ref.entityId }, select: { agencyId: true } });
+      return b ? { audience: 'AGENCY', agencyId: b.agencyId } : null;
+    }
+    case 'Payment': {
+      const p = await prisma.payment.findUnique({ where: { id: ref.entityId }, select: { agencyId: true } });
+      return p ? { audience: 'AGENCY', agencyId: p.agencyId } : null;
+    }
+    case 'AgencyApplication':
+    case 'Application':
+      // Onboarding/pipeline events surface to portal admins.
+      return { audience: 'ADMIN', agencyId: null };
+    default:
+      return null;
+  }
+}
+
+/** Records the notification into the in-app inbox. Never throws into the caller. */
+async function persistNotification(payload: NotificationPayload, ref: EntityRef): Promise<void> {
+  try {
+    const target = await resolveTarget(ref);
+    if (!target) return;
+    const rendered = renderNotification(payload);
+    await prisma.notification.create({
+      data: {
+        audience: target.audience,
+        agencyId: target.agencyId,
+        event: payload.event,
+        title: rendered.subject,
+        body: rendered.text.slice(0, 1000),
+        entityType: ref.entityType,
+        entityId: ref.entityId,
+      },
+    });
+  } catch (err) {
+    logger.error('Persisting notification to inbox failed', {
+      event: payload.event,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+export interface NotificationActor {
+  role: 'ADMIN' | 'VERIFIER' | 'AGENCY' | 'AGENT';
+  agencyId: string | null;
+}
+
+function inboxWhere(actor: NotificationActor) {
+  return actor.role === 'ADMIN' || actor.role === 'VERIFIER'
+    ? { audience: 'ADMIN' as NotificationAudience }
+    : { audience: 'AGENCY' as NotificationAudience, agencyId: actor.agencyId ?? '__none__' };
+}
+
+export async function listNotifications(actor: NotificationActor) {
+  const items = await prisma.notification.findMany({
+    where: inboxWhere(actor),
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+  });
+  const unread = items.filter((n) => !n.read).length;
+  return { items, unread };
+}
+
+export async function unreadCount(actor: NotificationActor): Promise<number> {
+  return prisma.notification.count({ where: { ...inboxWhere(actor), read: false } });
+}
+
+export async function markRead(id: string, actor: NotificationActor): Promise<void> {
+  await prisma.notification.updateMany({ where: { id, ...inboxWhere(actor) }, data: { read: true } });
+}
+
+export async function markAllRead(actor: NotificationActor): Promise<void> {
+  await prisma.notification.updateMany({ where: { ...inboxWhere(actor), read: false }, data: { read: true } });
+}
+
+/** Admin broadcast — drops an in-app notification into the inbox of active agencies. */
+export async function broadcastToAgencies(input: { subject: string; body: string; agencyIds?: string[] }): Promise<{ sent: number }> {
+  const agencies = input.agencyIds?.length
+    ? await prisma.agency.findMany({ where: { id: { in: input.agencyIds } }, select: { id: true } })
+    : await prisma.agency.findMany({ where: { status: 'ACTIVE' }, select: { id: true } });
+  if (agencies.length === 0) return { sent: 0 };
+  await prisma.notification.createMany({
+    data: agencies.map((a) => ({
+      audience: 'AGENCY' as NotificationAudience,
+      agencyId: a.id,
+      event: 'ADMIN_BROADCAST',
+      title: input.subject,
+      body: input.body,
+    })),
+  });
+  return { sent: agencies.length };
 }

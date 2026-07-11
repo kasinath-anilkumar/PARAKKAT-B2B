@@ -1,23 +1,25 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, Field, Input, PageHeader, Tabs } from '../../components/ui/kit';
+import { Badge, PageHeader, Tabs } from '../../components/ui/kit';
+import { formatPaymentTerms } from '../../shared/format';
+import * as agencyApi from '../../api/agency.api';
 
-interface Doc {
-  id: string;
-  name: string;
-  type: string;
-  status: 'Verified' | 'Pending Approval';
-  uploaded: string;
+const fmtDate = (d: string | null) => (d ? new Date(d).toLocaleDateString('en-IN') : '—');
+const DOC_TONE: Record<string, 'green' | 'amber' | 'red' | 'slate'> = { VERIFIED: 'green', APPROVED: 'green', UPLOADED: 'amber', PENDING: 'amber', REJECTED: 'red' };
+
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex justify-between gap-4 border-b border-slate-100 py-2 text-sm last:border-0">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right font-medium text-slate-900">{value ?? '—'}</span>
+    </div>
+  );
 }
-const DOCS: Doc[] = [
-  { id: 'D-1', name: 'GST Certificate.pdf', type: 'GST', status: 'Verified', uploaded: '2026-01-12' },
-  { id: 'D-2', name: 'PAN Card.pdf', type: 'PAN', status: 'Verified', uploaded: '2026-01-12' },
-  { id: 'D-3', name: 'Agency Agreement.pdf', type: 'Agreement', status: 'Verified', uploaded: '2026-01-15' },
-  { id: 'D-4', name: 'Updated Address Proof.pdf', type: 'Address', status: 'Pending Approval', uploaded: '2026-07-08' },
-];
 
 export function ProfilePage() {
   const [tab, setTab] = useState('company');
+  const { data: a, isLoading } = useQuery({ queryKey: ['my-agency'], queryFn: agencyApi.getMyAgency });
 
   return (
     <AppShell>
@@ -26,61 +28,64 @@ export function ProfilePage() {
       <Tabs
         tabs={[
           { key: 'company', label: 'Company Information' },
-          { key: 'documents', label: 'Documents', count: DOCS.length },
+          { key: 'documents', label: 'Documents', count: a?.documents.length ?? 0 },
         ]}
         active={tab}
         onChange={setTab}
       />
 
-      {tab === 'company' && (
-        <div className="max-w-2xl space-y-3">
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 text-sm font-semibold text-slate-700">Company details</div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Company name"><Input defaultValue="Holiday Planners" /></Field>
-              <Field label="Contact person"><Input defaultValue="Rahul Menon" /></Field>
-              <Field label="Email"><Input defaultValue="admin@holidayplanners.in" /></Field>
-              <Field label="Phone"><Input defaultValue="+91 98470 00000" /></Field>
-              <Field label="Address"><Input defaultValue="MG Road, Kochi, Kerala 682016" /></Field>
-              <Field label="Tier"><Input defaultValue="Tier A" readOnly /></Field>
+      {isLoading && <div className="h-40 animate-pulse rounded-xl border border-slate-200 bg-white" />}
+
+      {a && tab === 'company' && (
+        <div className="grid max-w-3xl gap-3 lg:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-white p-5">
+            <div className="mb-2 text-sm font-semibold text-slate-700">Company details</div>
+            <Row label="Legal name" value={a.legalName} />
+            <Row label="Business type" value={a.isIndependent ? 'Independent Agent' : 'Standard Agency'} />
+            <Row label="Contact email" value={a.contactEmail} />
+            <Row label="Contact phone" value={a.contactPhone} />
+            <Row label="Status" value={<Badge tone={a.status === 'ACTIVE' ? 'green' : 'red'}>{a.status}</Badge>} />
+            <Row label="Member since" value={fmtDate(a.createdAt)} />
+          </div>
+          <div className="space-y-3">
+            <div className="rounded-xl border border-slate-200 bg-white p-5">
+              <div className="mb-2 text-sm font-semibold text-slate-700">Tax details</div>
+              {!a.isIndependent && <Row label="GSTIN" value={<span className="font-mono text-xs">{a.gstin}</span>} />}
+              <Row label="PAN" value={<span className="font-mono text-xs">{a.pan}</span>} />
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-5">
+              <div className="mb-2 text-sm font-semibold text-slate-700">Commercial terms</div>
+              {a.commercial ? (
+                <>
+                  <Row label="Tier" value={a.commercial.tier} />
+                  <Row label="Payment mode" value={a.commercial.paymentMode} />
+                  <Row label="Credit limit" value={`₹${Number(a.commercial.creditLimit).toLocaleString('en-IN')}`} />
+                  <Row label="Payment terms" value={formatPaymentTerms(a.commercial.paymentTerms)} />
+                  <Row label="Markup" value={`${a.commercial.markupPct}%`} />
+                </>
+              ) : (
+                <p className="text-sm text-slate-400">No commercial configuration.</p>
+              )}
             </div>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 text-sm font-semibold text-slate-700">Tax details</div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="GST number"><Input defaultValue="32ABCDE1234F1Z5" /></Field>
-              <Field label="PAN"><Input defaultValue="ABCDE1234F" /></Field>
-            </div>
-          </div>
-          <div className="flex justify-end">
-            <Button variant="primary">Save changes</Button>
-          </div>
+          <p className="text-xs text-slate-400 lg:col-span-2">Company and tax details are set during onboarding and managed by the Parakkat admin team. Contact support to request a change.</p>
         </div>
       )}
 
-      {tab === 'documents' && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white p-4">
-            <div className="text-sm text-slate-500">Updated documents are reviewed by the admin before they replace the current copy.</div>
-            <label className="cursor-pointer">
-              <span className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700">Upload Document</span>
-              <input type="file" className="hidden" />
-            </label>
-          </div>
-          <div className="space-y-2">
-            {DOCS.map((d) => (
-              <div key={d.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
-                <div>
-                  <div className="font-medium text-slate-800">{d.name}</div>
-                  <div className="text-xs text-slate-400">{d.type} · uploaded {d.uploaded}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge tone={d.status === 'Verified' ? 'green' : 'amber'}>{d.status}</Badge>
-                  <Button variant="ghost">View</Button>
-                </div>
+      {a && tab === 'documents' && (
+        <div className="space-y-2">
+          {a.documents.map((d) => (
+            <div key={d.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
+              <div>
+                <div className="font-medium text-slate-800">{d.fileName ?? d.docType}</div>
+                <div className="text-xs text-slate-400">{d.docType} · uploaded {fmtDate(d.uploadedAt)}</div>
               </div>
-            ))}
-          </div>
+              <Badge tone={DOC_TONE[d.status] ?? 'slate'}>{d.status}</Badge>
+            </div>
+          ))}
+          {a.documents.length === 0 && (
+            <div className="rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center text-sm text-slate-500">No documents on file.</div>
+          )}
         </div>
       )}
     </AppShell>

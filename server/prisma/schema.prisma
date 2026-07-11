@@ -108,6 +108,12 @@ enum PaymentMode {
   CREDIT
 }
 
+// v4 §1 — a booking is either an overnight stay or a same-day day-use.
+enum StayType {
+  OVERNIGHT
+  DAY_USE
+}
+
 // Booking lifecycle + unified credit gate (Instructions.md §10 / §4.11):
 //   DRAFT → (credit gate)
 //     within limit        → CONFIRMED_ON_CREDIT → COMMITTED
@@ -231,6 +237,8 @@ model User {
   commercialConfigUpdates CommercialConfiguration[] @relation("CommercialConfigUpdatedBy")
   auditLogs               AuditLog[]
   bookings                Booking[]                 @relation("BookingAgent")
+  supportTickets          SupportTicket[]           @relation("SupportTicketCreatedBy")
+  supportMessages         SupportMessage[]          @relation("SupportMessageAuthor")
 
   @@index([agencyId])
   @@index([role])
@@ -279,6 +287,7 @@ model Agency {
   legalName     String
   gstin         String
   pan           String
+  isIndependent Boolean            @default(false)
   status        AgencyStatus       @default(ACTIVE)
   contactEmail  String
   contactPhone  String
@@ -297,6 +306,8 @@ model Agency {
   payments                 Payment[]
   creditNotes              CreditNote[]
   allotments               Allotment[]
+  supportTickets           SupportTicket[]
+  notifications            Notification[]
 
   @@index([status])
 }
@@ -339,6 +350,7 @@ model AgencyApplication {
   // public applicant (no User account) resume/edit/submit their draft. Null
   // for admin-initiated applications (exception path, Decision D7).
   resumeTokenHash String?
+  isIndependent   Boolean                   @default(false)
 
   lifecycleState ApplicationLifecycleState @default(DRAFT)
   submittedAt    DateTime?
@@ -444,6 +456,10 @@ model Booking {
   nights   Int
   guests   Int
 
+  // v4 §1 — overnight vs same-day day-use (AxisRooms exposes day-use as a distinct
+  // product). DAY_USE bookings have checkIn == checkOut (nights = 0).
+  stayType StayType @default(OVERNIGHT)
+
   // v3 §2 — rate plan & occupancy snapshot (reproducible pricing).
   ratePlan       RatePlanCode @default(EP)
   adults         Int          @default(2)
@@ -486,37 +502,6 @@ model Booking {
   // Recent-bookings / date-range dashboard queries.
   @@index([createdAt])
   @@index([groupId])
-}
-
-// v3 §2 — portal-managed pricing config for an AxisRooms room type (D1-b).
-// Keyed by the opaque AxisRooms (resortId, roomTypeId); no local inventory master.
-model RoomTypePricing {
-  id           String @id @default(uuid())
-  resortId     String
-  roomTypeId   String
-  roomTypeName String
-
-  baseOccupancy Int @default(2) // standard (double) occupancy the base rate covers
-  maxAdults     Int @default(3)
-  maxChildren   Int @default(2)
-  maxOccupancy  Int @default(4)
-
-  extraAdultCharge Decimal @db.Decimal(12, 2) @default(0) // per extra adult / night
-  childCharge      Decimal @db.Decimal(12, 2) @default(0) // flat per-child / night (fallback when no age bands)
-  extraBedCharge   Decimal @db.Decimal(12, 2) @default(0) // per extra bed / night
-
-  // v3 §2.2 — child age bands: [{ minAge, maxAge, charge }] per night. When set,
-  // each child is charged by the band matching its age (no band → free, e.g.
-  // infants). Falls back to the flat childCharge when null/empty.
-  childBands Json?
-
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  ratePlans RatePlanRate[]
-
-  @@unique([resortId, roomTypeId])
 }
 
 // v3 §3 — stop-sell / blackout and allocation caps for the B2B channel. Read-only
@@ -569,26 +554,6 @@ model RebookTask {
   resolvedAt  DateTime?
 
   @@index([status])
-}
-
-// v3 §2.1/§2.4 — per-plan base rate for a room type, effective-dated (rate calendar).
-model RatePlanRate {
-  id                String          @id @default(uuid())
-  roomTypePricingId String
-  roomTypePricing   RoomTypePricing @relation(fields: [roomTypePricingId], references: [id], onDelete: Cascade)
-
-  plan     RatePlanCode
-  baseRate Decimal      @db.Decimal(12, 2) // standard-occupancy rate / night for this plan
-
-  // Null window = the default/always-applicable rate; dated windows override it.
-  effectiveFrom DateTime?
-  effectiveTo   DateTime?
-  active        Boolean   @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([roomTypePricingId, plan])
 }
 
 // ---------------------------------------------------------------------------
@@ -719,4 +684,97 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([actorId])
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Support — agency/agent raise tickets; admin responds. Messages thread on a
+// ticket; internal notes are admin-only (not returned to the agency side).
+// ---------------------------------------------------------------------------
+
+enum SupportPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum SupportStatus {
+  OPEN
+  PENDING
+  RESOLVED
+  CLOSED
+}
+
+model SupportTicket {
+  id              String          @id @default(uuid())
+  agencyId        String
+  agency          Agency          @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  createdByUserId String
+  createdBy       User            @relation("SupportTicketCreatedBy", fields: [createdByUserId], references: [id])
+  subject         String
+  category        String?
+  priority        SupportPriority @default(MEDIUM)
+  status          SupportStatus   @default(OPEN)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  messages SupportMessage[]
+
+  @@index([agencyId])
+  @@index([status])
+}
+
+model SupportMessage {
+  id           String        @id @default(uuid())
+  ticketId     String
+  ticket       SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorUserId String
+  author       User          @relation("SupportMessageAuthor", fields: [authorUserId], references: [id])
+  authorRole   ActorRole
+  body         String
+  // Admin-only note, never returned to the agency/agent side.
+  internal     Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+
+  @@index([ticketId])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications — in-app inbox. Persisted centrally when notify() emits, keyed
+// to the agency (agency/agent inbox) or to ADMIN (pipeline/ops notifications).
+// ---------------------------------------------------------------------------
+
+enum NotificationAudience {
+  AGENCY
+  ADMIN
+}
+
+model Notification {
+  id         String               @id @default(uuid())
+  audience   NotificationAudience
+  agencyId   String?
+  agency     Agency?              @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  event      String
+  title      String
+  body       String
+  entityType String?
+  entityId   String?
+  read       Boolean              @default(false)
+  createdAt  DateTime             @default(now())
+
+  @@index([agencyId, read])
+  @@index([audience, read])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// System settings — admin-editable runtime configuration, one row per group
+// (company / financial / booking / portal). JSON value merged over code
+// defaults; loaded into an in-memory cache at startup and on save so the
+// booking engine, PDFs and login gate read current values without a redeploy.
+// ---------------------------------------------------------------------------
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
 }

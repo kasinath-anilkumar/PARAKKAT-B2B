@@ -27,3 +27,14 @@ export async function availability(req: Request, res: Response): Promise<void> {
   const roomTypes = await catalogService.searchAvailability(q, req.user!.agencyId);
   res.status(200).json({ roomTypes });
 }
+
+/** Admin read-through of AxisRooms rates/restrictions for a resort + date range. */
+export async function axisRates(req: Request, res: Response): Promise<void> {
+  const { resortId, checkIn, checkOut } = req.query as { resortId?: string; checkIn: string; checkOut: string };
+  res.status(200).json(await catalogService.getAxisRatesOverview(resortId, checkIn, checkOut));
+}
+
+/** Admin read-only catalog of AxisRooms resorts + room types. */
+export async function adminCatalog(_req: Request, res: Response): Promise<void> {
+  res.status(200).json(await catalogService.getAdminCatalog());
+}

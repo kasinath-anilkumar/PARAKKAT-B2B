@@ -30,7 +30,7 @@ async function setupAgency(opts: { paymentMode: PaymentMode; creditLimit: number
   await testPrisma.commercialConfiguration.create({
     data: {
       agencyId: agency.id,
-      tier: 'STANDARD',
+      tier: 'B',
       paymentMode: opts.paymentMode,
       creditLimit: opts.creditLimit,
       paymentTerms: 'net 30',

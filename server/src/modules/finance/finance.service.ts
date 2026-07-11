@@ -10,12 +10,25 @@ import { recordAuditLogSafe } from '../audit/audit.service';
 import { notify } from '../notifications/notification.service';
 import { computeCancellation } from './cancellation';
 import { computeGst, generateIrn } from './gst';
+import { getInvoiceNumberFormat } from '../settings/settings.service';
 import { enqueueCrsEvent, flushOutbox } from './crsOutbox.service';
 
 function invoiceNumber(): string {
   const now = new Date();
-  const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-  return `INV-${ym}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const rand = crypto.randomBytes(3).toString('hex').toUpperCase();
+  // Admin-configurable template (System Settings → Financial). Supported tokens:
+  // {YYYY} {YY} {MM} {RAND}. {RAND} guarantees uniqueness.
+  const template = getInvoiceNumberFormat() || 'INV-{YYYY}{MM}-{RAND}';
+  const out = template
+    .replace(/\{YYYY\}/g, yyyy)
+    .replace(/\{YY\}/g, yyyy.slice(2))
+    .replace(/\{MM\}/g, mm)
+    .replace(/\{RAND\}/g, rand)
+    .replace(/\{SEQ\}/gi, rand); // {seq} alias → random (no global counter)
+  // Always ensure a random component so numbers stay unique even if the template omits {RAND}.
+  return /\{?RAND|SEQ/i.test(template) || out.includes(rand) ? out : `${out}-${rand}`;
 }
 
 function creditNoteNumber(): string {
@@ -503,6 +516,373 @@ export async function getAgencyBalance(agencyId: string): Promise<AgencyBalance>
   return { outstanding, creditLimit, available: Math.max(0, creditLimit - outstanding) };
 }
 
+export interface CreditAgencyBalance {
+  agencyId: string;
+  legalName: string;
+  gstin: string | null;
+  status: string;
+  creditLimit: number;
+  outstanding: number;
+  available: number;
+  advance: number;
+  openInvoices: number;
+}
+
+/**
+ * An agency's unapplied advance (credit) balance: money received offline beyond
+ * what was owed at the time. Tracked as INBOUND `offline` payments not yet linked
+ * to an invoice (invoiceId = null). Applying it (applyAgencyAdvance) links it to
+ * open invoices, at which point it leaves this pool.
+ */
+export async function getAdvanceBalance(agencyId: string): Promise<number> {
+  const agg = await prisma.payment.aggregate({
+    where: { agencyId, gateway: 'offline', direction: 'INBOUND', status: 'SUCCEEDED', invoiceId: null },
+    _sum: { amount: true },
+  });
+  return round2(Number(agg._sum.amount ?? 0));
+}
+
+export interface SettlementBalance {
+  outstanding: number;
+  creditLimit: number;
+  available: number;
+  advance: number;
+}
+
+/** Balance shape for the admin settlement view — gross AR plus the advance pool. */
+export async function getSettlementBalance(agencyId: string): Promise<SettlementBalance> {
+  const [outstanding, advance, config] = await Promise.all([
+    getOutstanding(agencyId),
+    getAdvanceBalance(agencyId),
+    prisma.commercialConfiguration.findFirst({ where: { agencyId, isCurrent: true } }),
+  ]);
+  const creditLimit = config ? Number(config.creditLimit) : 0;
+  return { outstanding, creditLimit, available: Math.max(0, round2(creditLimit - outstanding)), advance };
+}
+
+/**
+ * Admin settlement view: every agency that operates on credit — i.e. has a
+ * current CREDIT commercial config OR any open credit invoices — with their
+ * live balances. `search` filters by legal name or GSTIN (case-insensitive).
+ */
+export async function listCreditAgencyBalances(search?: string): Promise<CreditAgencyBalance[]> {
+  const [creditConfigs, invoiceAgg, advanceAgg] = await Promise.all([
+    prisma.commercialConfiguration.findMany({
+      where: { isCurrent: true, paymentMode: 'CREDIT' },
+      select: { agencyId: true, creditLimit: true },
+    }),
+    prisma.invoice.groupBy({
+      by: ['agencyId'],
+      where: { paymentMode: 'CREDIT', status: { in: ['ISSUED', 'PARTIALLY_PAID'] } },
+      _sum: { amount: true, amountPaid: true },
+      _count: { _all: true },
+    }),
+    prisma.payment.groupBy({
+      by: ['agencyId'],
+      where: { gateway: 'offline', direction: 'INBOUND', status: 'SUCCEEDED', invoiceId: null },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const limitByAgency = new Map(creditConfigs.map((c) => [c.agencyId, Number(c.creditLimit)]));
+  const advanceByAgency = new Map(advanceAgg.map((g) => [g.agencyId, round2(Number(g._sum.amount ?? 0))]));
+  const owedByAgency = new Map(
+    invoiceAgg.map((g) => [
+      g.agencyId,
+      {
+        outstanding: round2(Math.max(0, Number(g._sum.amount ?? 0) - Number(g._sum.amountPaid ?? 0))),
+        openInvoices: g._count._all,
+      },
+    ]),
+  );
+
+  const agencyIds = Array.from(new Set([...limitByAgency.keys(), ...owedByAgency.keys(), ...advanceByAgency.keys()]));
+  if (agencyIds.length === 0) return [];
+
+  const where: Prisma.AgencyWhereInput = { id: { in: agencyIds } };
+  if (search && search.trim()) {
+    const q = search.trim();
+    where.OR = [
+      { legalName: { contains: q, mode: 'insensitive' } },
+      { gstin: { contains: q, mode: 'insensitive' } },
+    ];
+  }
+  const agencies = await prisma.agency.findMany({
+    where,
+    select: { id: true, legalName: true, gstin: true, status: true },
+    orderBy: { legalName: 'asc' },
+  });
+
+  return agencies.map((a) => {
+    const owed = owedByAgency.get(a.id);
+    const creditLimit = limitByAgency.get(a.id) ?? 0;
+    const outstanding = owed?.outstanding ?? 0;
+    return {
+      agencyId: a.id,
+      legalName: a.legalName,
+      gstin: a.gstin,
+      status: a.status,
+      creditLimit,
+      outstanding,
+      available: Math.max(0, round2(creditLimit - outstanding)),
+      advance: advanceByAgency.get(a.id) ?? 0,
+      openInvoices: owed?.openInvoices ?? 0,
+    };
+  });
+}
+
+export type SettlementMethod = 'CASH' | 'BANK_TRANSFER' | 'CHEQUE' | 'UPI' | 'OTHER';
+
+export interface OfflineSettlementInput {
+  agencyId: string;
+  amount: number;
+  method: SettlementMethod;
+  reference?: string;
+  note?: string;
+}
+
+export interface SettlementResult {
+  applied: number; // amount applied to open invoices
+  advanceRecorded: number; // overpayment parked as advance credit
+  allocations: { invoiceId: string; number: string; applied: number; fullySettled: boolean }[];
+  balance: SettlementBalance;
+}
+
+/**
+ * Admin records an OFFLINE payment (cash / bank transfer / cheque / UPI) received
+ * from a credit agency. The amount is applied FIFO across the agency's open credit
+ * invoices (oldest due first), reducing outstanding AR and freeing available credit.
+ * Any amount beyond the current outstanding is parked as an advance (credit) that
+ * can later be applied to new invoices (applyAgencyAdvance). No gateway is involved;
+ * each invoice allocation and the advance remainder book INBOUND `offline` payments.
+ */
+export async function recordOfflineSettlement(
+  input: OfflineSettlementInput,
+  actor: { actorId: string | null; actorRole: ActorRole },
+): Promise<SettlementResult> {
+  const agency = await prisma.agency.findUnique({
+    where: { id: input.agencyId },
+    select: { id: true, legalName: true, contactEmail: true, contactPhone: true },
+  });
+  if (!agency) throw ApiError.notFound('Agency not found');
+
+  const amount = round2(input.amount);
+  if (amount <= 0) throw ApiError.badRequest('Settlement amount must be greater than zero');
+
+  const openInvoices = await prisma.invoice.findMany({
+    where: { agencyId: input.agencyId, paymentMode: 'CREDIT', status: { in: ['ISSUED', 'PARTIALLY_PAID'] } },
+    orderBy: [{ dueDate: 'asc' }, { issuedAt: 'asc' }],
+  });
+
+  const refLabel = input.reference?.trim() ? `${input.method}:${input.reference.trim()}` : input.method;
+  const allocations: SettlementResult['allocations'] = [];
+  let remaining = amount;
+
+  await prisma.$transaction(async (tx) => {
+    for (const inv of openInvoices) {
+      if (remaining <= 0.001) break;
+      const invRemaining = round2(Number(inv.amount) - Number(inv.amountPaid));
+      if (invRemaining <= 0) continue;
+      const applied = round2(Math.min(remaining, invRemaining));
+      const newPaid = round2(Number(inv.amountPaid) + applied);
+      const fullySettled = newPaid >= Number(inv.amount) - 0.001;
+      await tx.invoice.update({
+        where: { id: inv.id },
+        data: { amountPaid: newPaid, status: fullySettled ? 'PAID' : 'PARTIALLY_PAID', paidAt: fullySettled ? new Date() : null },
+      });
+      await tx.payment.create({
+        data: {
+          agencyId: input.agencyId,
+          bookingId: inv.bookingId,
+          invoiceId: inv.id,
+          correlationId: inv.correlationId,
+          amount: applied,
+          direction: 'INBOUND',
+          status: 'SUCCEEDED',
+          gateway: 'offline',
+          gatewayRef: refLabel,
+          completedAt: new Date(),
+        },
+      });
+      await enqueueCrsEvent(tx, {
+        eventType: 'PAYMENT',
+        correlationId: inv.correlationId,
+        payload: { invoiceId: inv.id, agencyId: input.agencyId, amount: applied, method: input.method, offline: true, settlement: true, partial: !fullySettled },
+      });
+      allocations.push({ invoiceId: inv.id, number: inv.number, applied, fullySettled });
+      remaining = round2(remaining - applied);
+    }
+
+    // Overpayment → park the remainder as an unapplied advance (invoiceId = null).
+    if (remaining > 0.001) {
+      await tx.payment.create({
+        data: {
+          agencyId: input.agencyId,
+          correlationId: crypto.randomUUID(),
+          amount: remaining,
+          direction: 'INBOUND',
+          status: 'SUCCEEDED',
+          gateway: 'offline',
+          gatewayRef: input.reference?.trim() ? `ADVANCE:${input.method}:${input.reference.trim()}` : `ADVANCE:${input.method}`,
+          completedAt: new Date(),
+        },
+      });
+    }
+  });
+
+  const applied = round2(amount - remaining);
+  const advanceRecorded = round2(remaining);
+  await recordAuditLogSafe({
+    entityType: 'Agency',
+    entityId: input.agencyId,
+    event: 'OFFLINE_SETTLEMENT_RECORDED',
+    actorId: actor.actorId,
+    actorRole: actor.actorRole,
+    after: { amount, applied, advanceRecorded, method: input.method, reference: input.reference ?? null, note: input.note ?? null, allocations },
+  });
+  if (agency.contactEmail || agency.contactPhone) {
+    await notify(
+      { event: 'PAYMENT_RECEIVED', number: refLabel, amount },
+      { email: agency.contactEmail, phone: agency.contactPhone },
+      { entityType: 'Agency', entityId: input.agencyId },
+    );
+  }
+  await flushInline();
+  broadcast(['finance'], { agencyId: input.agencyId });
+
+  return { applied, advanceRecorded, allocations, balance: await getSettlementBalance(input.agencyId) };
+}
+
+const appliedRef = (ref: string | null) => (ref ? `${ref.replace(/^ADVANCE:/, '')}/APPLIED` : 'ADVANCE_APPLIED');
+
+/**
+ * Applies an agency's unapplied advance (credit) balance FIFO across its open
+ * credit invoices. Advance payments are re-linked (or split) onto the invoices —
+ * no new cash is created — so per-invoice ledgers and dashboard totals stay exact.
+ */
+export async function applyAgencyAdvance(
+  agencyId: string,
+  actor: { actorId: string | null; actorRole: ActorRole },
+): Promise<{ applied: number; balance: SettlementBalance }> {
+  const advance = await getAdvanceBalance(agencyId);
+  if (advance <= 0) throw ApiError.conflict('This agency has no advance balance to apply');
+
+  const openInvoices = await prisma.invoice.findMany({
+    where: { agencyId, paymentMode: 'CREDIT', status: { in: ['ISSUED', 'PARTIALLY_PAID'] } },
+    orderBy: [{ dueDate: 'asc' }, { issuedAt: 'asc' }],
+  });
+  const outstanding = openInvoices.reduce((s, i) => round2(s + (Number(i.amount) - Number(i.amountPaid))), 0);
+  if (outstanding <= 0) throw ApiError.conflict('This agency has no open invoices to apply the advance to');
+
+  const advancePayments = await prisma.payment.findMany({
+    where: { agencyId, gateway: 'offline', direction: 'INBOUND', status: 'SUCCEEDED', invoiceId: null },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  let appliedTotal = 0;
+  await prisma.$transaction(async (tx) => {
+    let ai = 0;
+    let advRemaining = advancePayments.length ? round2(Number(advancePayments[0].amount)) : 0;
+
+    for (const inv of openInvoices) {
+      let need = round2(Number(inv.amount) - Number(inv.amountPaid));
+      let appliedToInv = 0;
+      while (need > 0.001 && ai < advancePayments.length) {
+        if (advRemaining <= 0.001) {
+          ai += 1;
+          advRemaining = ai < advancePayments.length ? round2(Number(advancePayments[ai].amount)) : 0;
+          continue;
+        }
+        const adv = advancePayments[ai];
+        const take = round2(Math.min(need, advRemaining));
+        if (take >= advRemaining - 0.001) {
+          // Whole advance payment funds this invoice → re-link it.
+          await tx.payment.update({
+            where: { id: adv.id },
+            data: { invoiceId: inv.id, bookingId: inv.bookingId, correlationId: inv.correlationId, gatewayRef: appliedRef(adv.gatewayRef) },
+          });
+        } else {
+          // Split: shrink the advance payment, book the taken slice against the invoice.
+          await tx.payment.update({ where: { id: adv.id }, data: { amount: round2(advRemaining - take) } });
+          await tx.payment.create({
+            data: {
+              agencyId,
+              bookingId: inv.bookingId,
+              invoiceId: inv.id,
+              correlationId: inv.correlationId,
+              amount: take,
+              direction: 'INBOUND',
+              status: 'SUCCEEDED',
+              gateway: 'offline',
+              gatewayRef: appliedRef(adv.gatewayRef),
+              completedAt: new Date(),
+            },
+          });
+        }
+        appliedToInv = round2(appliedToInv + take);
+        need = round2(need - take);
+        advRemaining = round2(advRemaining - take);
+      }
+
+      if (appliedToInv > 0.001) {
+        const newPaid = round2(Number(inv.amountPaid) + appliedToInv);
+        const fullySettled = newPaid >= Number(inv.amount) - 0.001;
+        await tx.invoice.update({
+          where: { id: inv.id },
+          data: { amountPaid: newPaid, status: fullySettled ? 'PAID' : 'PARTIALLY_PAID', paidAt: fullySettled ? new Date() : null },
+        });
+        await enqueueCrsEvent(tx, {
+          eventType: 'PAYMENT',
+          correlationId: inv.correlationId,
+          payload: { invoiceId: inv.id, agencyId, amount: appliedToInv, offline: true, settlement: true, advanceApplied: true, partial: !fullySettled },
+        });
+        appliedTotal = round2(appliedTotal + appliedToInv);
+      }
+      if (ai >= advancePayments.length && advRemaining <= 0.001) break;
+    }
+  });
+
+  await recordAuditLogSafe({
+    entityType: 'Agency',
+    entityId: agencyId,
+    event: 'ADVANCE_APPLIED',
+    actorId: actor.actorId,
+    actorRole: actor.actorRole,
+    after: { applied: appliedTotal },
+  });
+  await flushInline();
+  broadcast(['finance'], { agencyId });
+
+  return { applied: appliedTotal, balance: await getSettlementBalance(agencyId) };
+}
+
+export interface SettlementHistoryEntry {
+  id: string;
+  amount: number;
+  reference: string | null;
+  invoiceNumber: string | null;
+  unapplied: boolean; // true = still an unapplied advance credit
+  createdAt: Date;
+}
+
+/** Offline settlement/advance receipts for an agency, newest first (admin history view). */
+export async function listAgencySettlementHistory(agencyId: string): Promise<SettlementHistoryEntry[]> {
+  const rows = await prisma.payment.findMany({
+    where: { agencyId, gateway: 'offline', direction: 'INBOUND' },
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+    select: { id: true, amount: true, gatewayRef: true, invoiceId: true, createdAt: true, invoice: { select: { number: true } } },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    amount: Number(r.amount),
+    reference: r.gatewayRef,
+    invoiceNumber: r.invoice?.number ?? null,
+    unapplied: r.invoiceId === null,
+    createdAt: r.createdAt,
+  }));
+}
+
 export async function listInvoices(agencyId: string, page: number, pageSize: number) {
   const where: Prisma.InvoiceWhereInput = { agencyId };
   const [items, total] = await Promise.all([
@@ -515,5 +895,72 @@ export async function listInvoices(agencyId: string, page: number, pageSize: num
     }),
     prisma.invoice.count({ where }),
   ]);
+  return { items, total, page, pageSize };
+}
+
+/** Admin — CRS outbox status: event counts + recent events (AxisRooms/CRS sync visibility). */
+export async function getCrsStatus() {
+  const [pending, sent, failed, events] = await Promise.all([
+    prisma.crsOutboxEvent.count({ where: { status: 'PENDING' } }),
+    prisma.crsOutboxEvent.count({ where: { status: 'SENT' } }),
+    prisma.crsOutboxEvent.count({ where: { status: 'FAILED' } }),
+    prisma.crsOutboxEvent.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: { id: true, eventType: true, status: true, correlationId: true, attempts: true, lastError: true, createdAt: true },
+    }),
+  ]);
+  return { counts: { pending, sent, failed, total: pending + sent + failed }, events };
+}
+
+/** Admin — invoices across all agencies (with agency label + overdue flag). */
+export async function listAllInvoices(page: number, pageSize: number) {
+  const [rows, total] = await Promise.all([
+    prisma.invoice.findMany({
+      orderBy: { issuedAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      include: { agency: { select: { legalName: true } } },
+    }),
+    prisma.invoice.count(),
+  ]);
+  const now = new Date();
+  const items = rows.map((i) => ({
+    id: i.id,
+    number: i.number,
+    agencyName: i.agency.legalName,
+    amount: Number(i.amount),
+    amountPaid: Number(i.amountPaid),
+    paymentMode: i.paymentMode,
+    status: i.status,
+    overdue: i.status !== 'PAID' && i.status !== 'VOID' && !!i.dueDate && i.dueDate < now,
+    dueDate: i.dueDate,
+    issuedAt: i.issuedAt,
+  }));
+  return { items, total, page, pageSize };
+}
+
+/** Admin — outbound money movements: cancellation refunds + chargebacks, newest first. */
+export async function listRefunds(page: number, pageSize: number) {
+  const where: Prisma.PaymentWhereInput = { direction: 'OUTBOUND' };
+  const [rows, total] = await Promise.all([
+    prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      include: { agency: { select: { legalName: true } }, invoice: { select: { number: true } } },
+    }),
+    prisma.payment.count({ where }),
+  ]);
+  const items = rows.map((p) => ({
+    id: p.id,
+    agencyName: p.agency.legalName,
+    invoiceNumber: p.invoice?.number ?? null,
+    amount: Number(p.amount),
+    type: (p.status === 'CHARGEBACK' ? 'Chargeback' : 'Refund') as 'Refund' | 'Chargeback',
+    gatewayRef: p.gatewayRef,
+    createdAt: p.createdAt,
+  }));
   return { items, total, page, pageSize };
 }

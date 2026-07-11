@@ -4,6 +4,7 @@ export interface ApplicationListItem {
   id: string;
   legalName: string | null;
   gstin: string | null;
+  isIndependent?: boolean;
   lifecycleState: LifecycleState;
   submittedAt: string | null;
   createdAt: string;
@@ -46,6 +47,7 @@ export interface ApplicationDetail {
   legalName: string | null;
   gstin: string | null;
   pan: string | null;
+  isIndependent?: boolean;
   repName: string | null;
   repEmail: string | null;
   repMobile: string | null;
@@ -71,20 +73,68 @@ export interface Agency {
   legalName: string;
   gstin: string;
   pan: string;
+  isIndependent?: boolean;
   status: 'ACTIVE' | 'SUSPENDED';
   contactEmail: string;
   contactPhone: string;
   activatedAt: string | null;
   applicationId: string | null;
   createdAt: string;
+  commercialConfigurations?: CommercialConfig[];
 }
 
 export interface CreateAgencyInput {
   legalName: string;
-  gstin: string;
+  gstin?: string;
   pan: string;
   contactEmail: string;
   contactPhone: string;
+  tier: string;
+  isIndependent?: boolean;
+}
+
+export interface AgencyUser {
+  id: string;
+  email: string;
+  name: string | null;
+  role: 'ADMIN' | 'VERIFIER' | 'AGENCY' | 'AGENT';
+  status: 'ACTIVE' | 'SUSPENDED';
+  canBook: boolean;
+  canCancel: boolean;
+  canModify: boolean;
+  canViewReports: boolean;
+  createdAt: string;
+}
+
+export interface AgencyDocument {
+  id: string;
+  docType: string;
+  status: string;
+  fileName: string | null;
+  uploadedAt: string;
+}
+
+export interface AgencyStats {
+  bookings: number;
+  invoices: number;
+  invoiced: number;
+  paid: number;
+  outstanding: number;
+}
+
+export interface AgencyDetail extends Agency {
+  commercialConfigurations: CommercialConfig[];
+  users: AgencyUser[];
+  documents: AgencyDocument[];
+  stats: AgencyStats;
+}
+
+export interface UpdateAgencyInput {
+  legalName?: string;
+  gstin?: string;
+  pan?: string;
+  contactEmail?: string;
+  contactPhone?: string;
 }
 
 export interface AuditLogEntry {

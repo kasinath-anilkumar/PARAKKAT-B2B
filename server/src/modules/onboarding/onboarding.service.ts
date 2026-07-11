@@ -76,23 +76,39 @@ export async function updateDraft(
 
 async function assertNoDuplicate(
   applicationId: string,
-  gstin: string,
+  gstin: string | undefined | null,
   pan: string,
 ): Promise<void> {
+  const applicationConditions: any[] = [{ pan }];
+  if (gstin) {
+    applicationConditions.push({ gstin });
+  }
+
   const dupApplication = await prisma.agencyApplication.findFirst({
     where: {
       id: { not: applicationId },
       lifecycleState: { in: [...BLOCKING_STATES] },
-      OR: [{ gstin }, { pan }],
+      OR: applicationConditions,
     },
   });
   if (dupApplication) {
-    throw ApiError.conflict('An application for this GSTIN or PAN is already in progress');
+    const conflictedField = dupApplication.pan === pan ? 'PAN' : 'GSTIN';
+    throw ApiError.conflict(`An application for this ${conflictedField} is already in progress`);
   }
 
-  const dupAgency = await prisma.agency.findFirst({ where: { OR: [{ gstin }, { pan }] } });
+  const agencyConditions: any[] = [{ pan }];
+  if (gstin) {
+    agencyConditions.push({ gstin });
+  }
+
+  const dupAgency = await prisma.agency.findFirst({
+    where: {
+      OR: agencyConditions,
+    },
+  });
   if (dupAgency) {
-    throw ApiError.conflict('An agency for this GSTIN or PAN already exists');
+    const conflictedField = dupAgency.pan === pan ? 'PAN' : 'GSTIN';
+    throw ApiError.conflict(`An agency for this ${conflictedField} already exists`);
   }
 }
 
@@ -107,8 +123,9 @@ export async function submitApplication(
   // the verification pipeline.
   const parsed = submitApplicationSchema.safeParse({
     legalName: application.legalName,
-    gstin: application.gstin,
+    gstin: application.gstin ?? undefined,
     pan: application.pan,
+    isIndependent: application.isIndependent,
     addressLine1: application.addressLine1,
     addressLine2: application.addressLine2 ?? undefined,
     city: application.city,

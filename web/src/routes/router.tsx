@@ -13,6 +13,8 @@ import { ApplicationsPage } from '../admin/ApplicationsPage';
 import { AuditLogPage } from '../admin/AuditLogPage';
 import { ReportsPage } from '../admin/ReportsPage';
 import { AgencyManagementPage } from '../admin/AgencyManagementPage';
+import { AgencyDetailPage } from '../admin/AgencyDetailPage';
+import { AgentDetailPage } from '../shared/AgentDetailPage';
 import { SectionPlaceholder, type SectionVariant } from '../admin/SectionPlaceholder';
 import { AgentsPage } from '../admin/sections/AgentsPage';
 import { ResortsPage } from '../admin/sections/ResortsPage';
@@ -44,7 +46,6 @@ import type { IconName } from '../components/layout/icons';
 
 import { SearchPage } from '../agent/SearchPage';
 import { BookingsPage } from '../agent/BookingsPage';
-import { FinancePage } from '../shared/FinancePage';
 import { ProtectedRoute } from './ProtectedRoute';
 
 // Any admin sidebar leaf that doesn't have a purpose-built page yet lands on a
@@ -176,14 +177,6 @@ export function AppRouter() {
         }
       />
       <Route
-        path="/finance"
-        element={
-          <ProtectedRoute allowedRoles={['ADMIN', 'AGENCY', 'AGENT']}>
-            <FinancePage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
         path="/reports"
         element={
           <ProtectedRoute allowedRoles={['ADMIN']}>
@@ -204,6 +197,30 @@ export function AppRouter() {
         element={
           <ProtectedRoute allowedRoles={['ADMIN']}>
             <AgencyManagementPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/agencies/:id"
+        element={
+          <ProtectedRoute allowedRoles={['ADMIN']}>
+            <AgencyDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/agents/:id"
+        element={
+          <ProtectedRoute allowedRoles={['ADMIN']}>
+            <AgentDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agency/agents/:id"
+        element={
+          <ProtectedRoute allowedRoles={['AGENCY']}>
+            <AgentDetailPage />
           </ProtectedRoute>
         }
       />

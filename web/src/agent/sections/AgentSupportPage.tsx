@@ -1,49 +1,67 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, DataTable, Field, Input, Modal, PageHeader, Select, Tabs, type Column, type Tone } from '../../components/ui/kit';
-import { AGENT_FAQS, AGENT_TICKETS, type AgentTicket, type TicketState } from '../mock';
+import { Badge, Button, DataTable, PageHeader, Tabs, type Column } from '../../components/ui/kit';
+import { SkeletonRows } from '../../components/ui/Skeleton';
+import * as supportApi from '../../api/support.api';
+import type { TicketSummary } from '../../api/support.api';
+import { PRIORITY_TONE, RaiseTicketModal, STATUS_TONE, TicketModal } from '../../shared/SupportTicketModal';
 
-const STATUS_TONE: Record<TicketState, Tone> = { Open: 'red', Pending: 'amber', Resolved: 'green', Closed: 'slate' };
-const PRIORITY_TONE: Record<AgentTicket['priority'], Tone> = { High: 'red', Medium: 'amber', Low: 'slate' };
+const FAQS = [
+  { q: 'How do I make a booking?', a: 'Go to Search & Book, pick dates and occupancy, choose a room and rate plan, then add it to your cart and confirm.' },
+  { q: 'Can I book a day-use (same-day) stay?', a: 'Yes — toggle "Day use" on the Search & Book page to see same-day rates.' },
+  { q: 'How do I cancel a booking?', a: 'Open My Bookings, select the booking and choose Cancel. Cancellation charges follow the policy for the dates.' },
+  { q: 'Where do I see a guest’s history?', a: 'Guest Management lists your travellers with their stays; open a guest to see full booking history.' },
+  { q: 'Why can’t I perform an action?', a: 'Your permissions are set by your agency. Ask your agency admin to enable booking, cancel, modify or reports access.' },
+];
+const fmt = (d: string) => new Date(d).toLocaleString('en-IN');
 
 export function AgentSupportPage() {
   const [tab, setTab] = useState('tickets');
-  const [tickets, setTickets] = useState<AgentTicket[]>(AGENT_TICKETS);
   const [raising, setRaising] = useState(false);
-  const [selected, setSelected] = useState<AgentTicket | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
 
-  const columns: Column<AgentTicket>[] = [
-    { header: 'Ticket', className: 'font-mono text-xs text-slate-600', render: (t) => t.id },
+  const { data: tickets = [], isLoading } = useQuery({ queryKey: ['support', 'mine'], queryFn: () => supportApi.listTickets() });
+
+  const columns: Column<TicketSummary>[] = [
     { header: 'Subject', className: 'font-medium text-slate-800', render: (t) => t.subject },
+    { header: 'Category', render: (t) => t.category ?? '—' },
     { header: 'Priority', render: (t) => <Badge tone={PRIORITY_TONE[t.priority]}>{t.priority}</Badge> },
     { header: 'Status', render: (t) => <Badge tone={STATUS_TONE[t.status]}>{t.status}</Badge> },
-    { header: 'Updated', render: (t) => <span className="text-slate-500">{t.updated}</span> },
-    { header: 'Actions', align: 'right', render: (t) => <Button variant="ghost" onClick={() => setSelected(t)}>Open</Button> },
+    { header: 'Updated', render: (t) => <span className="text-slate-500">{fmt(t.updatedAt)}</span> },
+    { header: 'Actions', align: 'right', render: (t) => <Button variant="ghost" onClick={() => setOpenId(t.id)}>Open</Button> },
   ];
 
   return (
     <AppShell>
       <PageHeader
         title="Support"
-        subtitle="Raise tickets, track their status and browse FAQs."
+        subtitle="Raise a ticket, track its status and browse FAQs."
         actions={<Button variant="primary" onClick={() => setRaising(true)}>+ Raise Ticket</Button>}
       />
 
       <Tabs
         tabs={[
           { key: 'tickets', label: 'My Tickets', count: tickets.length },
-          { key: 'faqs', label: 'FAQs', count: AGENT_FAQS.length },
+          { key: 'faqs', label: 'FAQs', count: FAQS.length },
         ]}
         active={tab}
         onChange={setTab}
       />
 
-      {tab === 'tickets' && <DataTable columns={columns} rows={tickets} rowKey={(t) => t.id} empty="No tickets yet." />}
+      {tab === 'tickets' &&
+        (isLoading ? (
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <table className="w-full text-sm"><tbody><SkeletonRows rows={5} cols={6} /></tbody></table>
+          </div>
+        ) : (
+          <DataTable columns={columns} rows={tickets} rowKey={(t) => t.id} empty="No tickets yet. Raise one and our team will respond." />
+        ))}
 
       {tab === 'faqs' && (
         <div className="max-w-2xl space-y-2">
-          {AGENT_FAQS.map((f, i) => (
+          {FAQS.map((f, i) => (
             <div key={i} className="rounded-xl border border-slate-200 bg-white">
               <button onClick={() => setOpenFaq(openFaq === i ? null : i)} className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-slate-800">
                 {f.q}
@@ -55,54 +73,8 @@ export function AgentSupportPage() {
         </div>
       )}
 
-      {raising && (
-        <Modal
-          title="Raise Support Ticket"
-          onClose={() => setRaising(false)}
-          footer={
-            <>
-              <Button onClick={() => setRaising(false)}>Cancel</Button>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setTickets((p) => [{ id: `TK-${3396 + p.length}`, subject: 'New ticket', priority: 'Medium', status: 'Open', updated: '2026-07-10 10:00' }, ...p]);
-                  setRaising(false);
-                }}
-              >
-                Submit ticket
-              </Button>
-            </>
-          }
-        >
-          <div className="space-y-3">
-            <Field label="Subject"><Input placeholder="Brief summary of your issue" /></Field>
-            <Field label="Priority">
-              <Select value="Medium" onChange={() => {}} options={[{ value: 'Low', label: 'Low' }, { value: 'Medium', label: 'Medium' }, { value: 'High', label: 'High' }]} />
-            </Field>
-            <Field label="Description">
-              <textarea rows={4} placeholder="Describe your issue…" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400" />
-            </Field>
-          </div>
-        </Modal>
-      )}
-
-      {selected && (
-        <Modal title={`${selected.id} · ${selected.subject}`} onClose={() => setSelected(null)} wide footer={<Button variant="primary" onClick={() => setSelected(null)}>Send reply</Button>}>
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-            <Badge tone={PRIORITY_TONE[selected.priority]}>{selected.priority} priority</Badge>
-            <Badge tone={STATUS_TONE[selected.status]}>{selected.status}</Badge>
-          </div>
-          <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600">
-            <p>You raised: {selected.subject}.</p>
-            <p className="text-xs text-slate-400">Last updated {selected.updated}</p>
-          </div>
-          <div className="mt-3">
-            <Field label="Reply">
-              <textarea rows={3} placeholder="Add a reply…" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400" />
-            </Field>
-          </div>
-        </Modal>
-      )}
+      {raising && <RaiseTicketModal onClose={() => setRaising(false)} onCreated={(id) => { setRaising(false); setOpenId(id); }} />}
+      {openId && <TicketModal id={openId} onClose={() => setOpenId(null)} />}
     </AppShell>
   );
 }

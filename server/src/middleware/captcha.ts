@@ -4,19 +4,50 @@ import { ApiError } from '../utils/apiError';
 import { logger } from '../lib/logger';
 
 /**
- * Optional CAPTCHA gate for public onboarding entry points (§11). Disabled by
- * default (dev). When CAPTCHA_ENABLED=true it expects an `x-captcha-token`
- * header. Live provider verification (hCaptcha/reCAPTCHA/Turnstile) is a
- * Phase 8 hardening task — this is the seam plus a presence check so the
- * contract is in place; wire the real verify call in `verifyCaptchaToken`.
+ * CAPTCHA gate for public onboarding entry points (§11). Disabled by default
+ * (dev). When CAPTCHA_ENABLED=true it expects an `x-captcha-token` header and
+ * verifies it server-side against the configured provider's siteverify endpoint
+ * (Cloudflare Turnstile / hCaptcha / reCAPTCHA — all share the same
+ * secret+response contract and return `{ success: boolean }`).
  */
-async function verifyCaptchaToken(token: string): Promise<boolean> {
+const SITEVERIFY_URLS: Record<typeof env.CAPTCHA_PROVIDER, string> = {
+  turnstile: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+  hcaptcha: 'https://hcaptcha.com/siteverify',
+  recaptcha: 'https://www.google.com/recaptcha/api/siteverify',
+};
+
+async function verifyCaptchaToken(token: string, remoteIp?: string): Promise<boolean> {
   if (!env.CAPTCHA_SECRET) {
-    logger.warn('[captcha] CAPTCHA_ENABLED but CAPTCHA_SECRET is not set; accepting token presence only');
-    return token.length > 0;
+    // Should be unreachable in production (env validation blocks boot), but stay
+    // fail-closed rather than accepting unverified tokens.
+    logger.error('[captcha] CAPTCHA_ENABLED but CAPTCHA_SECRET is not set; rejecting');
+    return false;
   }
-  // TODO(phase-8): call the CAPTCHA provider's siteverify endpoint here.
-  return token.length > 0;
+
+  const body = new URLSearchParams({ secret: env.CAPTCHA_SECRET, response: token });
+  if (remoteIp) body.set('remoteip', remoteIp);
+
+  try {
+    const res = await fetch(SITEVERIFY_URLS[env.CAPTCHA_PROVIDER], {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      logger.warn('[captcha] siteverify returned non-2xx', { status: res.status, provider: env.CAPTCHA_PROVIDER });
+      return false;
+    }
+    const data = (await res.json()) as { success?: boolean; 'error-codes'?: string[] };
+    if (!data.success) {
+      logger.warn('[captcha] verification failed', { provider: env.CAPTCHA_PROVIDER, errors: data['error-codes'] });
+    }
+    return data.success === true;
+  } catch (err) {
+    // Network/timeout — fail closed so a broken CAPTCHA service can't be bypassed.
+    logger.error('[captcha] siteverify request failed', { err: (err as Error).message, provider: env.CAPTCHA_PROVIDER });
+    return false;
+  }
 }
 
 export function captchaGuard(req: Request, _res: Response, next: NextFunction): void {
@@ -29,7 +60,7 @@ export function captchaGuard(req: Request, _res: Response, next: NextFunction): 
     next(ApiError.badRequest('CAPTCHA verification required'));
     return;
   }
-  verifyCaptchaToken(token)
+  verifyCaptchaToken(token, req.ip)
     .then((ok) => next(ok ? undefined : ApiError.badRequest('CAPTCHA verification failed')))
     .catch(next);
 }

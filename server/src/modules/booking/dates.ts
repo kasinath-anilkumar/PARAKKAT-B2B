@@ -1,5 +1,6 @@
 import { env } from '../../config/env';
 import { ApiError } from '../../utils/apiError';
+import { getBookingWindowDays } from '../settings/settings.service';
 import { nightsBetween } from './pricing';
 
 /**
@@ -33,24 +34,44 @@ export interface ValidatedStay {
   nights: number;
 }
 
-export function validateStayDates(checkInStr: string, checkOutStr: string): ValidatedStay {
+export type StayType = 'OVERNIGHT' | 'DAY_USE';
+
+/**
+ * Validates stay dates. For OVERNIGHT, check-out must be strictly after check-in
+ * and within the max-stay window. For DAY_USE (same-day), check-out is the arrival
+ * day (nights = 0) — any provided checkOut is ignored. Both enforce the not-past
+ * and max-advance-window rules.
+ */
+export function validateStayDates(
+  checkInStr: string,
+  checkOutStr?: string,
+  stayType: StayType = 'OVERNIGHT',
+): ValidatedStay {
   const checkIn = parseDay(checkInStr);
-  const checkOut = parseDay(checkOutStr);
-  if (!checkIn || !checkOut) throw ApiError.badRequest('Check-in and check-out must be valid dates (YYYY-MM-DD)');
+  if (!checkIn) throw ApiError.badRequest('Check-in must be a valid date (YYYY-MM-DD)');
 
   const today = startOfToday();
   if (checkIn < today) throw ApiError.badRequest('Check-in date cannot be in the past');
 
+  // Advance window is admin-configurable (System Settings → Booking), falling
+  // back to the env default until settings are loaded.
+  const windowDays = getBookingWindowDays() || env.BOOKING_MAX_ADVANCE_DAYS;
+  const maxCheckIn = new Date(today);
+  maxCheckIn.setDate(maxCheckIn.getDate() + windowDays);
+  if (checkIn > maxCheckIn) {
+    throw ApiError.badRequest(`Check-in cannot be more than ${windowDays} days in advance`);
+  }
+
+  if (stayType === 'DAY_USE') {
+    return { checkIn, checkOut: checkIn, nights: 0 };
+  }
+
+  const checkOut = checkOutStr ? parseDay(checkOutStr) : null;
+  if (!checkOut) throw ApiError.badRequest('Check-out must be a valid date (YYYY-MM-DD)');
   const nights = nightsBetween(checkIn, checkOut);
   if (nights <= 0) throw ApiError.badRequest('Check-out must be after check-in');
   if (nights > env.BOOKING_MAX_STAY_NIGHTS) {
     throw ApiError.badRequest(`A single booking cannot exceed ${env.BOOKING_MAX_STAY_NIGHTS} nights`);
-  }
-
-  const maxCheckIn = new Date(today);
-  maxCheckIn.setDate(maxCheckIn.getDate() + env.BOOKING_MAX_ADVANCE_DAYS);
-  if (checkIn > maxCheckIn) {
-    throw ApiError.badRequest(`Check-in cannot be more than ${env.BOOKING_MAX_ADVANCE_DAYS} days in advance`);
   }
 
   return { checkIn, checkOut, nights };

@@ -1,8 +1,10 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { authenticate } from '../../middleware/auth';
 import { requireRole } from '../../middleware/rbac';
+import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../utils/asyncHandler';
-import { getTiers } from './tiers';
+import { getTiers, saveTiers } from './tiers';
 
 export const commercialRouter = Router();
 
@@ -19,6 +21,37 @@ commercialRouter.get(
   authenticate,
   requireRole('ADMIN'),
   asyncHandler(async (_req, res) => {
+    res.status(200).json({ tiers: getTiers() });
+  }),
+);
+
+const updateTiersSchema = z.object({
+  tiers: z.record(
+    z.string(),
+    z.object({
+      paymentMode: z.enum(['PREPAY', 'CREDIT']),
+      creditLimit: z.number().nonnegative(),
+      paymentTerms: z.string().min(1),
+      markupPct: z.number().nonnegative(),
+    }),
+  ),
+});
+
+/**
+ * @openapi
+ * /commercial/tiers:
+ *   post:
+ *     summary: Update configured tier presets dynamically (ADMIN)
+ *     tags: [Commercial]
+ *     security: [{ bearerAuth: [] }]
+ */
+commercialRouter.post(
+  '/tiers',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({ body: updateTiersSchema }),
+  asyncHandler(async (req, res) => {
+    saveTiers(req.body.tiers);
     res.status(200).json({ tiers: getTiers() });
   }),
 );

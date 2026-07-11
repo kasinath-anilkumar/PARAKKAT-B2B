@@ -16,6 +16,9 @@ agentsRouter.get('/', authenticate, requireRole('AGENCY'), asyncHandler(agentsCo
 /** List all agents across agencies (ADMIN). */
 agentsRouter.get('/all', authenticate, requireRole('ADMIN'), asyncHandler(agentsController.listAll));
 
+/** Get a single agent's detail (AGENCY → own agent only; ADMIN → any). */
+agentsRouter.get('/:id', ...manage, validate({ params: agentIdParamSchema }), asyncHandler(agentsController.getOne));
+
 /** Create an agent (AGENCY → own agency; ADMIN → must pass agencyId). */
 agentsRouter.post('/', ...manage, validate({ body: createAgentSchema }), asyncHandler(agentsController.create));
 

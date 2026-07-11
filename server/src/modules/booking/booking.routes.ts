@@ -80,6 +80,16 @@ bookingRouter.get(
 
 /**
  * @openapi
+ * /bookings/guests:
+ *   get:
+ *     summary: Guests derived from bookings' lead-guest data (AGENT/AGENCY)
+ *     tags: [Bookings]
+ *     security: [{ bearerAuth: [] }]
+ */
+bookingRouter.get('/guests', ...agencySide, asyncHandler(bookingController.guests));
+
+/**
+ * @openapi
  * /bookings/admin:
  *   get:
  *     summary: List all bookings across agencies (ADMIN, read-only oversight)
@@ -160,6 +170,22 @@ bookingRouter.get(
   ...agencySide,
   validate({ params: bookingIdParamSchema }),
   asyncHandler(bookingController.getById),
+);
+
+/**
+ * @openapi
+ * /bookings/{id}/voucher:
+ *   get:
+ *     summary: Download the booking voucher PDF (ADMIN any; AGENCY/AGENT own)
+ *     tags: [Bookings]
+ *     security: [{ bearerAuth: [] }]
+ */
+bookingRouter.get(
+  '/:id/voucher',
+  authenticate,
+  requireRole('ADMIN', 'AGENCY', 'AGENT'),
+  validate({ params: bookingIdParamSchema }),
+  asyncHandler(bookingController.voucherPdf),
 );
 
 /**

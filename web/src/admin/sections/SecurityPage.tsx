@@ -1,80 +1,160 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, DataTable, Field, Input, PageHeader, Tabs, Toggle, type Column } from '../../components/ui/kit';
-import { FAILED_LOGINS, SESSIONS, type MockFailedLogin, type MockSession } from '../mock';
+import { Badge, Button, DataTable, PageHeader, Tabs, Toggle, type Column } from '../../components/ui/kit';
+import { SkeletonRows } from '../../components/ui/Skeleton';
+import * as securityApi from '../../api/security.api';
+import * as settingsApi from '../../api/settings.api';
+import type { SecuritySettings } from '../../api/settings.api';
+import type { FailedLogin, Session } from '../../api/security.api';
+import { MfaCard } from '../../shared/MfaCard';
+
+const fmt = (d: string) => new Date(d).toLocaleString('en-IN');
 
 export function SecurityPage() {
   const [tab, setTab] = useState('sessions');
-  const [sessions, setSessions] = useState<MockSession[]>(SESSIONS);
-  const [policy, setPolicy] = useState({ mfa: true, ipAllowlist: false, minLength: 12 });
+  const qc = useQueryClient();
 
-  const sessionCols: Column<MockSession>[] = [
-    { header: 'User', className: 'font-medium text-slate-800', render: (s) => s.user },
-    { header: 'Role', render: (s) => <Badge tone="blue">{s.role}</Badge> },
-    { header: 'IP', className: 'font-mono text-xs text-slate-600', render: (s) => s.ip },
-    { header: 'Device', render: (s) => s.device },
-    { header: 'Started', render: (s) => <span className="text-slate-500">{s.started}</span> },
-    {
-      header: 'Actions',
-      align: 'right',
-      render: (s) => <Button variant="danger" onClick={() => setSessions((p) => p.filter((x) => x.id !== s.id))}>Revoke</Button>,
+  const sessionsQ = useQuery({ queryKey: ['security', 'sessions'], queryFn: securityApi.listSessions });
+  const failedQ = useQuery({ queryKey: ['security', 'failed'], queryFn: securityApi.listFailedLogins });
+  const policyQ = useQuery({ queryKey: ['security', 'policy'], queryFn: securityApi.getPolicy });
+  const settingsQ = useQuery({ queryKey: ['settings'], queryFn: settingsApi.getSettings });
+
+  const revoke = useMutation({
+    mutationFn: (id: string) => securityApi.revokeSession(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['security', 'sessions'] }),
+  });
+
+  // Editable MFA-enforcement policy (persisted to the security settings group).
+  const [mfaForm, setMfaForm] = useState<SecuritySettings | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (settingsQ.data && !mfaForm) setMfaForm({ ...settingsQ.data.security });
+  }, [settingsQ.data, mfaForm]);
+  const saveMfa = useMutation({
+    mutationFn: () => settingsApi.updateSettings('security', mfaForm!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings'] });
+      qc.invalidateQueries({ queryKey: ['security', 'policy'] });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
     },
+  });
+  const setMfa = (field: keyof SecuritySettings, value: boolean) =>
+    setMfaForm((f) => (f ? { ...f, [field]: value } : f));
+
+  const sessionCols: Column<Session>[] = [
+    {
+      header: 'User',
+      render: (s) => (
+        <div>
+          <div className="font-medium text-slate-800">{s.user}</div>
+          <div className="text-xs text-slate-400">{s.email}</div>
+        </div>
+      ),
+    },
+    { header: 'Role', render: (s) => <Badge tone="blue">{s.role}</Badge> },
+    { header: 'IP', className: 'font-mono text-xs text-slate-600', render: (s) => s.ip ?? '—' },
+    { header: 'Device', render: (s) => <span className="block max-w-[200px] truncate text-xs text-slate-500">{s.userAgent ?? '—'}</span> },
+    { header: 'Started', render: (s) => <span className="text-slate-500">{fmt(s.createdAt)}</span> },
+    { header: 'Actions', align: 'right', render: (s) => <Button variant="danger" disabled={revoke.isPending} onClick={() => revoke.mutate(s.id)}>Revoke</Button> },
   ];
 
-  const failedCols: Column<MockFailedLogin>[] = [
+  const failedCols: Column<FailedLogin>[] = [
     { header: 'Email', className: 'font-medium text-slate-800', render: (f) => f.email },
-    { header: 'IP', className: 'font-mono text-xs text-slate-600', render: (f) => f.ip },
+    { header: 'Role', render: (f) => (f.role ? <Badge tone="slate">{f.role}</Badge> : '—') },
     { header: 'Attempts', align: 'center', render: (f) => <Badge tone={f.attempts >= 5 ? 'red' : 'amber'}>{f.attempts}</Badge> },
-    { header: 'Last attempt', render: (f) => <span className="text-slate-500">{f.lastAttempt}</span> },
-    { header: 'Actions', align: 'right', render: () => <Button variant="secondary">Block IP</Button> },
+    { header: 'Last attempt', render: (f) => <span className="text-slate-500">{fmt(f.lastAttempt)}</span> },
   ];
+
+  const p = policyQ.data;
 
   return (
     <AppShell>
-      <PageHeader title="Security" subtitle="Active sessions, failed login attempts and account security policy." />
+      <PageHeader title="Security" subtitle="Active sessions, failed login attempts and the effective security policy." />
       <Tabs
         tabs={[
-          { key: 'sessions', label: 'Active Sessions', count: sessions.length },
-          { key: 'failed', label: 'Failed Logins', count: FAILED_LOGINS.length },
+          { key: 'sessions', label: 'Active Sessions', count: sessionsQ.data?.length },
+          { key: 'failed', label: 'Failed Logins', count: failedQ.data?.length },
           { key: 'policy', label: 'Password & Policy' },
         ]}
         active={tab}
         onChange={setTab}
       />
 
-      {tab === 'sessions' && <DataTable columns={sessionCols} rows={sessions} rowKey={(s) => s.id} empty="No active sessions." />}
-      {tab === 'failed' && <DataTable columns={failedCols} rows={FAILED_LOGINS} rowKey={(f) => f.id} />}
-      {tab === 'policy' && (
-        <div className="max-w-xl space-y-3">
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 text-sm font-semibold text-slate-700">Authentication</div>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-slate-700">Enforce MFA for Admin & Verifier</div>
-                  <div className="text-xs text-slate-400">Require TOTP or email OTP at login.</div>
+      {tab === 'sessions' &&
+        (sessionsQ.isLoading ? (
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white"><table className="w-full text-sm"><tbody><SkeletonRows rows={6} cols={6} /></tbody></table></div>
+        ) : (
+          <DataTable columns={sessionCols} rows={sessionsQ.data ?? []} rowKey={(s) => s.id} empty="No active sessions." />
+        ))}
+
+      {tab === 'failed' &&
+        (failedQ.isLoading ? (
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white"><table className="w-full text-sm"><tbody><SkeletonRows rows={5} cols={4} /></tbody></table></div>
+        ) : (
+          <DataTable columns={failedCols} rows={failedQ.data ?? []} rowKey={(f) => f.email} empty="No failed login attempts recorded." />
+        ))}
+
+      {tab === 'policy' && p && (
+        <div className="grid max-w-3xl gap-3 lg:grid-cols-2">
+          {/* Admin's own two-factor enrolment */}
+          <div className="lg:col-span-2"><MfaCard /></div>
+
+          {/* Org-wide MFA enforcement — editable, persisted to settings */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 lg:col-span-2">
+            <div className="mb-1 text-sm font-semibold text-slate-700">Two-factor enforcement</div>
+            <div className="mb-3 text-xs text-slate-400">Control who is required to use MFA. The master switch must be on for any enforcement to apply.</div>
+            {mfaForm && (
+              <div className="space-y-1">
+                <ToggleRow label="Enable MFA (master switch)" hint="When off, no one is prompted for a second factor." checked={mfaForm.mfaEnabled} onChange={(v) => setMfa('mfaEnabled', v)} />
+                <ToggleRow label="Require for Admin & Verifier" checked={mfaForm.enforceAdmin} disabled={!mfaForm.mfaEnabled} onChange={(v) => setMfa('enforceAdmin', v)} />
+                <ToggleRow label="Require for Agency principals" checked={mfaForm.enforceAgency} disabled={!mfaForm.mfaEnabled} onChange={(v) => setMfa('enforceAgency', v)} />
+                <ToggleRow label="Require for Agents" checked={mfaForm.enforceAgent} disabled={!mfaForm.mfaEnabled} onChange={(v) => setMfa('enforceAgent', v)} />
+                <div className="flex items-center gap-3 pt-3">
+                  <Button variant="primary" disabled={saveMfa.isPending} onClick={() => saveMfa.mutate()}>{saveMfa.isPending ? 'Saving…' : 'Save enforcement'}</Button>
+                  {saved && <span className="text-xs font-medium text-green-700">Saved — applies on next login.</span>}
                 </div>
-                <Toggle checked={policy.mfa} onChange={(v) => setPolicy((p) => ({ ...p, mfa: v }))} />
+                <p className="pt-1 text-xs text-slate-400">Enforced users who haven&apos;t enrolled will be walked through setup at their next login.</p>
               </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-slate-700">IP allow-list</div>
-                  <div className="text-xs text-slate-400">Restrict admin access to approved IP ranges.</div>
-                </div>
-                <Toggle checked={policy.ipAllowlist} onChange={(v) => setPolicy((p) => ({ ...p, ipAllowlist: v }))} />
-              </div>
-            </div>
+            )}
           </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <div className="mb-3 text-sm font-semibold text-slate-700">Password Policy</div>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Minimum length"><Input type="number" value={policy.minLength} onChange={(e) => setPolicy((p) => ({ ...p, minLength: Number(e.target.value) }))} /></Field>
-              <Field label="Rotation (days)"><Input type="number" defaultValue={90} /></Field>
-            </div>
-            <div className="mt-3"><Button variant="primary">Save policy</Button></div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5">
+            <div className="mb-2 text-sm font-semibold text-slate-700">Password policy</div>
+            <Row label="Minimum length" value={`${p.password.minLength} characters`} />
+            {p.password.requires.map((r) => (
+              <Row key={r} label={r} value={<Badge tone="green">Required</Badge>} />
+            ))}
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-5">
+            <div className="mb-2 text-sm font-semibold text-slate-700">Sessions</div>
+            <Row label="Access token TTL" value={p.session.accessTokenTtl} />
+            <Row label="Refresh token TTL" value={`${p.session.refreshTokenTtlDays} days`} />
           </div>
         </div>
       )}
     </AppShell>
+  );
+}
+
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex justify-between gap-4 border-b border-slate-100 py-2 text-sm last:border-0">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right font-medium text-slate-900">{value}</span>
+    </div>
+  );
+}
+
+function ToggleRow({ label, hint, checked, disabled, onChange }: { label: string; hint?: string; checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className={`flex items-center justify-between gap-4 border-b border-slate-100 py-2.5 last:border-0 ${disabled ? 'opacity-50' : ''}`}>
+      <div>
+        <div className="text-sm font-medium text-slate-700">{label}</div>
+        {hint && <div className="text-xs text-slate-400">{hint}</div>}
+      </div>
+      <Toggle checked={checked} onChange={(v) => !disabled && onChange(v)} />
+    </div>
   );
 }

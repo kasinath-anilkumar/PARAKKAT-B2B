@@ -3,8 +3,10 @@ import type {
   AxisRoomsClient,
   CreateReservationInput,
   CreateReservationResult,
+  RatesQuery,
   Resort,
   RoomTypeAvailability,
+  RoomTypeRates,
 } from './axisrooms.types';
 
 /**
@@ -35,6 +37,9 @@ export class LiveAxisRoomsClient implements AxisRoomsClient {
   }
   async getRoomType(_resortId: string, _roomTypeId: string): Promise<RoomTypeAvailability | null> {
     this.notImplemented('getRoomType');
+  }
+  async getRoomTypeRates(_query: RatesQuery): Promise<RoomTypeRates | null> {
+    this.notImplemented('getRoomTypeRates');
   }
   async createReservation(_input: CreateReservationInput): Promise<CreateReservationResult> {
     this.notImplemented('createReservation');

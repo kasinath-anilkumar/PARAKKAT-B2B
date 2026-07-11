@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, DataTable, Field, Input, Modal, PageHeader, SearchInput, Select, Stat, Toggle, Toolbar, type Column } from '../../components/ui/kit';
+import { Badge, Button, DataTable, Field, Input, Modal, PageHeader, SearchInput, Stat, Toggle, Toolbar, type Column } from '../../components/ui/kit';
 import { CountUp } from '../../components/ui/CountUp';
 import { SkeletonRows } from '../../components/ui/Skeleton';
 import * as agentsApi from '../../api/agents.api';
@@ -41,10 +42,10 @@ export function AgentsPage() {
     {
       header: 'Agent',
       render: (a) => (
-        <div>
+        <Link to={`/admin/agents/${a.id}`} className="block hover:underline">
           <div className="font-medium text-slate-800">{a.name ?? '—'}</div>
           <div className="text-xs text-slate-400">{a.email}</div>
-        </div>
+        </Link>
       ),
     },
     { header: 'Agency', render: (a) => a.agencyName },
@@ -84,10 +85,17 @@ export function AgentsPage() {
       <PageHeader
         title="Agent Management"
         subtitle="All agents across every agency — create, disable, reset credentials and force logout."
-        actions={<Button variant="primary" onClick={() => { setError(null); setCreating(true); }}>+ Create Agent</Button>}
+        actions={!creating && <Button variant="primary" onClick={() => { setError(null); setCreating(true); }}>+ Create Agent</Button>}
       />
 
       {error && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+
+      {creating && (
+        <CreateAgentSection
+          onClose={() => setCreating(false)}
+          onCreated={(c) => { setCreating(false); if (c) setCredential(c); }}
+        />
+      )}
 
       <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Total Agents" value={<CountUp to={agents.length} />} tone="blue" />
@@ -106,7 +114,6 @@ export function AgentsPage() {
         <DataTable columns={columns} rows={rows} rowKey={(a) => a.id} empty="No agents found." />
       )}
 
-      {creating && <CreateAgentModal onClose={() => setCreating(false)} onCreated={(c) => { setCreating(false); if (c) setCredential(c); }} />}
       {credential && (
         <Modal title="Temporary password" onClose={() => setCredential(null)} footer={<Button variant="primary" onClick={() => setCredential(null)}>Done</Button>}>
           <p className="text-sm text-slate-600">Share these credentials with the agent. The password is shown only once.</p>
@@ -120,7 +127,58 @@ export function AgentsPage() {
   );
 }
 
-function CreateAgentModal({ onClose, onCreated }: { onClose: () => void; onCreated: (c: { email: string; password: string } | null) => void }) {
+/** Searchable agency typeahead — filters by legal name or GSTIN as you type. */
+function AgencyPicker({
+  agencies,
+  value,
+  onChange,
+}: {
+  agencies: { id: string; legalName: string; gstin: string }[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const selected = agencies.find((a) => a.id === value);
+  const filtered = agencies
+    .filter((a) => [a.legalName, a.gstin].some((f) => f.toLowerCase().includes(query.toLowerCase())))
+    .slice(0, 8);
+
+  return (
+    <div className="relative">
+      <input
+        value={open ? query : selected?.legalName ?? ''}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); if (value) onChange(''); }}
+        onFocus={() => { setOpen(true); setQuery(''); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="Search agency by name or GSTIN…"
+        className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-blue-400"
+      />
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-slate-400">No active agencies found.</div>
+          ) : (
+            filtered.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { onChange(a.id); setOpen(false); setQuery(''); }}
+                className={`flex w-full flex-col items-start px-3 py-2 text-left hover:bg-slate-50 ${a.id === value ? 'bg-blue-50' : ''}`}
+              >
+                <span className="text-sm font-medium text-slate-800">{a.legalName}</span>
+                <span className="font-mono text-xs text-slate-400">{a.gstin}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CreateAgentSection({ onClose, onCreated }: { onClose: () => void; onCreated: (c: { email: string; password: string } | null) => void }) {
   const qc = useQueryClient();
   const { data: agencies } = useQuery({ queryKey: ['agencies'], queryFn: adminApi.listAgencies });
   const [form, setForm] = useState({ name: '', email: '', agencyId: '' });
@@ -136,40 +194,41 @@ function CreateAgentModal({ onClose, onCreated }: { onClose: () => void; onCreat
   });
 
   return (
-    <Modal
-      title="Create Agent"
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={create.isPending || !form.name || !form.email || !form.agencyId} onClick={() => create.mutate()}>{create.isPending ? 'Creating…' : 'Create agent'}</Button>
-        </>
-      }
-    >
-      {error && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
-      <div className="space-y-3">
-        <Field label="Agency">
-          <Select
-            value={form.agencyId}
-            onChange={(v) => setForm({ ...form, agencyId: v })}
-            options={[{ value: '', label: 'Select agency…' }, ...activeAgencies.map((a) => ({ value: a.id, label: a.legalName }))]}
-          />
-        </Field>
-        <Field label="Full name"><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Agent name" /></Field>
-        <Field label="Email"><Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="agent@agency.com" /></Field>
-        <div>
-          <div className="mb-1.5 text-xs font-medium text-slate-600">Permissions</div>
-          <div className="space-y-2">
-            {PERM_LABELS.map((p) => (
-              <div key={p.key} className="flex items-center justify-between">
-                <span className="text-sm text-slate-700">{p.label}</span>
-                <Toggle checked={perms[p.key]} onChange={(v) => setPerms((prev) => ({ ...prev, [p.key]: v }))} />
-              </div>
-            ))}
+    <div className="mb-3 rounded-xl border border-blue-200 bg-white shadow-sm ring-1 ring-blue-100">
+      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <h2 className="text-sm font-semibold text-slate-800">Create Agent</h2>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700" aria-label="Close">✕</button>
+      </div>
+      <div className="p-4">
+        {error && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-3">
+            <Field label="Agency">
+              <AgencyPicker agencies={activeAgencies} value={form.agencyId} onChange={(id) => setForm({ ...form, agencyId: id })} />
+            </Field>
+            <Field label="Full name"><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Agent name" /></Field>
+            <Field label="Email"><Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="agent@agency.com" /></Field>
+          </div>
+          <div>
+            <div className="mb-1.5 text-xs font-medium text-slate-600">Permissions</div>
+            <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50 p-3">
+              {PERM_LABELS.map((p) => (
+                <div key={p.key} className="flex items-center justify-between">
+                  <span className="text-sm text-slate-700">{p.label}</span>
+                  <Toggle checked={perms[p.key]} onChange={(v) => setPerms((prev) => ({ ...prev, [p.key]: v }))} />
+                </div>
+              ))}
+            </div>
           </div>
         </div>
+        <div className="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3">
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={create.isPending || !form.name || !form.email || !form.agencyId} onClick={() => { setError(null); create.mutate(); }}>
+            {create.isPending ? 'Creating…' : 'Create agent'}
+          </Button>
+        </div>
       </div>
-    </Modal>
+    </div>
   );
 }
 

@@ -25,7 +25,8 @@ export async function browseRooms(): Promise<BrowseRoom[]> {
 export interface AvailabilityParams {
   resortId: string;
   checkIn: string;
-  checkOut: string;
+  checkOut?: string; // optional for DAY_USE (same-day)
+  stayType?: 'OVERNIGHT' | 'DAY_USE'; // v4 §1 — default OVERNIGHT
   guests: number;
   adults?: number;
   children?: number;
@@ -149,4 +150,30 @@ export async function runRebookQueue(): Promise<{ resolved: number; stillPending
 
 export async function retryRebook(bookingId: string): Promise<Booking> {
   return (await httpClient.post(`/bookings/admin/rebook/${bookingId}/retry`)).data;
+}
+
+export interface GuestBooking {
+  id: string;
+  resortName: string;
+  checkIn: string;
+  checkOut: string;
+  state: BookingState;
+  agencyPrice: number;
+}
+
+export interface GuestSummary {
+  key: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  stays: number;
+  lastStay: string | null;
+  totalSpend: number;
+  frequent: boolean;
+  bookings: GuestBooking[];
+}
+
+/** Guests derived from bookings' lead-guest data (agency-wide, or agent-scoped). */
+export async function listGuests(): Promise<{ guests: GuestSummary[]; totalStays: number }> {
+  return (await httpClient.get('/bookings/guests')).data;
 }

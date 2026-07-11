@@ -17,7 +17,7 @@ import { notify, type EntityRef } from '../notifications/notification.service';
 import type { NotificationPayload } from '../notifications/templates';
 import { evaluateCreditGate } from './creditGate';
 import { validateStayDates } from './dates';
-import { priceRoom } from '../pricing/pricing.service';
+import { priceRoomFromAxis, priceDayUseFromAxis } from '../pricing/pricing.service';
 import { assertBookable } from '../inventory/inventory.service';
 import { Prisma, type ActorRole, type RatePlanCode } from '@prisma/client';
 
@@ -30,7 +30,8 @@ export interface CreateBookingInput {
   resortId: string;
   roomTypeId: string;
   checkIn: string; // YYYY-MM-DD
-  checkOut: string;
+  checkOut?: string; // optional for DAY_USE (same-day)
+  stayType?: 'OVERNIGHT' | 'DAY_USE'; // v4 §1 — defaults to OVERNIGHT
   guests: number;
   plan?: RatePlanCode; // v3 §2 — defaults to EP
   adults?: number; // defaults to guests
@@ -85,6 +86,7 @@ async function commitToAxisRooms(booking: Booking): Promise<Booking> {
       checkIn: booking.checkIn.toISOString().slice(0, 10),
       checkOut: booking.checkOut.toISOString().slice(0, 10),
       guests: booking.guests,
+      stayType: booking.stayType,
     });
     const committed = await prisma.booking.update({
       where: { id: booking.id },
@@ -280,10 +282,13 @@ async function resolveLine(
   actor: AgentActor,
   resolvedSoFar: { base: LineBase; agencyPrice: number }[] = [],
 ) {
-  // Authoritative stay-date validation (no past dates, max stay, advance window).
-  const { checkIn, checkOut, nights } = validateStayDates(input.checkIn, input.checkOut);
+  // v4 §1 — overnight vs same-day day-use. Authoritative stay-date validation
+  // (no past dates, max stay, advance window); day-use is same-day (nights = 0).
+  const stayType = input.stayType ?? 'OVERNIGHT';
+  const { checkIn, checkOut, nights } = validateStayDates(input.checkIn, input.checkOut, stayType);
 
-  const plan: RatePlanCode = input.plan ?? 'EP';
+  // Day-use is plan-agnostic (a same-day slot); meal plans apply to overnight only.
+  const plan: RatePlanCode = stayType === 'DAY_USE' ? 'EP' : input.plan ?? 'EP';
   const adults = input.adults ?? input.guests;
   // v3 §2.2 — child ages, when supplied, define the child count authoritatively.
   const childAges = input.childAges;
@@ -307,16 +312,34 @@ async function resolveLine(
   const resort = (await axis.listResorts()).find((r) => r.id === input.resortId);
   if (!resort) throw ApiError.notFound('Resort not found');
 
-  const charge = await priceRoom({
+  // v4 §1 — rates, occupancy and restrictions come from AxisRooms (source of truth);
+  // the portal applies only the agency markup. Use the raw YYYY-MM-DD inputs (not the
+  // parsed Dates) so the ARI date keys aren't shifted by timezone on toISOString().
+  // input.checkOut is guaranteed for OVERNIGHT (validateStayDates throws otherwise).
+  const checkOutStr = stayType === 'DAY_USE' ? input.checkIn : input.checkOut!;
+  const rates = await axis.getRoomTypeRates({
     resortId: input.resortId,
     roomTypeId: input.roomTypeId,
-    plan,
-    checkIn,
-    nights,
-    occupancy: { adults, children, extraBeds, childAges },
-    markupPct,
-    axisBaseRate: roomType.baseRatePerNight,
+    checkIn: input.checkIn,
+    checkOut: checkOutStr,
+    stayType,
   });
+  if (!rates) throw ApiError.conflict('Rates are not available for this room on the selected date(s)');
+  if (rates.restrictions.stopSell) throw ApiError.conflict('This room is not available for the selected date(s)');
+  // v4 §1 — CTA/CTD: no arrivals on a closed-to-arrival date; no departures on a
+  // closed-to-departure date (CTD applies to overnight only — day-use has no departure).
+  if (rates.restrictions.closedToArrival) {
+    throw ApiError.badRequest('Check-in is not allowed on this date (closed to arrival)');
+  }
+  if (stayType === 'OVERNIGHT' && rates.restrictions.closedToDeparture) {
+    throw ApiError.badRequest('Check-out is not allowed on this date (closed to departure)');
+  }
+  // Min-stay applies to overnight stays only.
+  if (stayType === 'OVERNIGHT' && nights < rates.restrictions.minNights) {
+    throw ApiError.badRequest(`This room requires a minimum stay of ${rates.restrictions.minNights} night(s)`);
+  }
+  const occupancy = { adults, children, extraBeds, childAges };
+  const charge = stayType === 'DAY_USE' ? priceDayUseFromAxis(rates, occupancy, markupPct) : priceRoomFromAxis(rates, plan, occupancy, markupPct);
 
   const base = {
     agencyId: actor.agencyId,
@@ -328,6 +351,7 @@ async function resolveLine(
     checkIn,
     checkOut,
     nights,
+    stayType,
     guests: totalGuests,
     ratePlan: plan,
     adults,
@@ -676,6 +700,61 @@ export async function listBookings(agencyId: string, page: number, pageSize: num
     prisma.booking.count({ where: { agencyId } }),
   ]);
   return { items, total, page, pageSize };
+}
+
+export interface GuestSummary {
+  key: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  stays: number;
+  lastStay: string | null;
+  totalSpend: number;
+  frequent: boolean;
+  bookings: { id: string; resortName: string; checkIn: Date; checkOut: Date; state: string; agencyPrice: number }[];
+}
+
+/**
+ * v3 §8 — guests are not a separate master; they are derived from the lead-guest
+ * data captured on bookings, grouped by email / phone / name. Scoped to the agency
+ * (or a single agent when `agentId` is set).
+ */
+export async function listGuests(agencyId: string, agentId?: string): Promise<{ guests: GuestSummary[]; totalStays: number }> {
+  const bookings = await prisma.booking.findMany({
+    where: { agencyId, ...(agentId ? { agentId } : {}), leadGuestName: { not: null } },
+    orderBy: { checkIn: 'desc' },
+    select: {
+      id: true,
+      leadGuestName: true,
+      leadGuestPhone: true,
+      leadGuestEmail: true,
+      resortName: true,
+      checkIn: true,
+      checkOut: true,
+      state: true,
+      agencyPrice: true,
+    },
+  });
+
+  const map = new Map<string, GuestSummary & { _lastStay: Date | null }>();
+  for (const b of bookings) {
+    const key = (b.leadGuestEmail || b.leadGuestPhone || b.leadGuestName || '').toLowerCase();
+    if (!key) continue;
+    let g = map.get(key);
+    if (!g) {
+      g = { key, name: b.leadGuestName ?? '—', email: b.leadGuestEmail, phone: b.leadGuestPhone, stays: 0, lastStay: null, totalSpend: 0, frequent: false, bookings: [], _lastStay: null };
+      map.set(key, g);
+    }
+    g.stays += 1;
+    g.totalSpend = Math.round((g.totalSpend + Number(b.agencyPrice)) * 100) / 100;
+    if (!g._lastStay || b.checkIn > g._lastStay) g._lastStay = b.checkIn;
+    g.bookings.push({ id: b.id, resortName: b.resortName, checkIn: b.checkIn, checkOut: b.checkOut, state: b.state, agencyPrice: Number(b.agencyPrice) });
+  }
+
+  const guests = [...map.values()]
+    .map(({ _lastStay, ...g }) => ({ ...g, lastStay: _lastStay ? _lastStay.toISOString() : null, frequent: g.stays >= 3 }))
+    .sort((a, b) => b.stays - a.stays);
+  return { guests, totalStays: bookings.length };
 }
 
 /** Admin-wide booking list across all agencies (read-only oversight). */

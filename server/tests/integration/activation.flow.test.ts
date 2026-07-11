@@ -91,7 +91,7 @@ describe('review → commercial config → agreement → eSign → active', () =
     const config = await request(app)
       .post(`/api/applications/${applicationId}/commercial-config`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ tier: 'GOLD', overrides: { markupPct: 7 } });
+      .send({ tier: 'A', overrides: { markupPct: 7 } });
     expect(config.status).toBe(200);
     expect(config.body.configuration.markupPct).toBe('7');
     const agencyId = config.body.agency.id as string;
@@ -134,7 +134,7 @@ describe('review → commercial config → agreement → eSign → active', () =
     await request(app)
       .post(`/api/applications/${applicationId}/commercial-config`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ tier: 'STANDARD' });
+      .send({ tier: 'B' });
 
     const activate = await request(app)
       .post(`/api/applications/${applicationId}/activate`)
@@ -149,7 +149,7 @@ describe('review → commercial config → agreement → eSign → active', () =
     await request(app)
       .post(`/api/applications/${applicationId}/commercial-config`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ tier: 'STANDARD' });
+      .send({ tier: 'B' });
     await request(app).post(`/api/applications/${applicationId}/agreement/send`).set('Authorization', `Bearer ${token}`);
 
     const esignRef = await refFor(applicationId, 'ESIGN');
@@ -194,7 +194,7 @@ describe('reject + suspend/reactivate', () => {
     await request(app)
       .post(`/api/applications/${applicationId}/commercial-config`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ tier: 'STANDARD' });
+      .send({ tier: 'B' });
     await request(app).post(`/api/applications/${applicationId}/agreement/send`).set('Authorization', `Bearer ${token}`);
     const esignRef = await refFor(applicationId, 'ESIGN');
     await postWebhook(esignRef, 'passed');

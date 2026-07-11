@@ -6,7 +6,6 @@ import { StatusDonut, TrendChart } from '../components/dashboard/charts';
 import { Icons } from '../components/layout/icons';
 import * as dashboardApi from '../api/dashboard.api';
 import { SkeletonStats, SkeletonChart, SkeletonTable } from '../components/ui/Skeleton';
-import { AGENCY_AGENTS, AGENCY_BOOKINGS, CREDIT_SUMMARY } from './mock';
 
 const QUICK_ACTIONS = [
   { label: 'New Booking', to: '/book', primary: true },
@@ -55,13 +54,12 @@ export function AgencyDashboard() {
 
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
             <StatCard label="Total Bookings" value={data.kpis.totalBookings.toLocaleString('en-IN')} icon={<Icons.bookings />} accent="blue" />
-            <StatCard label="Today's Bookings" value="3" icon={<Icons.bookings />} accent="sky" />
-            <StatCard label="Upcoming Check-ins" value={String(AGENCY_BOOKINGS.filter((b) => b.category === 'Upcoming').length)} icon={<Icons.resorts />} accent="violet" />
+            <StatCard label="Today's Bookings" value={String(data.kpis.todayBookings)} icon={<Icons.bookings />} accent="sky" />
+            <StatCard label="Upcoming Check-ins" value={String(data.kpis.upcomingCheckIns)} icon={<Icons.resorts />} accent="violet" />
             <StatCard label="Booking Value" value={inr(data.kpis.totalSpend)} icon={<Icons.finance />} accent="green" />
             <StatCard label="Outstanding" value={inr(data.kpis.outstanding)} icon={<Icons.reports />} accent="amber" />
-            <StatCard label="Available Credit" value={inr(CREDIT_SUMMARY.available)} icon={<Icons.agencies />} accent="green" hint={`of ${inr(CREDIT_SUMMARY.limit)} limit`} />
-            <StatCard label="Pending Payments" value={inr(CREDIT_SUMMARY.outstanding)} icon={<Icons.finance />} accent="amber" />
-            <StatCard label="Active Agents" value={String(AGENCY_AGENTS.filter((a) => a.status === 'Active').length)} icon={<Icons.agents />} accent="sky" />
+            <StatCard label="Available Credit" value={inr(data.kpis.available)} icon={<Icons.agencies />} accent="green" hint={`of ${inr(data.kpis.creditLimit)} limit`} />
+            <StatCard label="Active Agents" value={String(data.kpis.activeAgents)} icon={<Icons.agents />} accent="sky" />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">

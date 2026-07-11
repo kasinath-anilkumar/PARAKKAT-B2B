@@ -1,114 +1,68 @@
-import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, DataTable, Field, Input, PageHeader, Tabs, Toggle, type Column, type Tone } from '../../components/ui/kit';
-import { AIRPAY_TXNS, type MockTxn } from '../mock';
+import { Badge, PageHeader, type Tone } from '../../components/ui/kit';
+import { SkeletonCardGrid } from '../../components/ui/Skeleton';
+import * as securityApi from '../../api/security.api';
+import type { Integration } from '../../api/security.api';
 
-const TXN_TONE: Record<MockTxn['status'], Tone> = { Success: 'green', Failed: 'red', Refunded: 'violet' };
+const CATEGORY_ORDER = ['Payments', 'Messaging', 'Verification', 'Inventory', 'Finance'];
 
-function ChannelCard({ name, provider, connected, onToggle }: { name: string; provider: string; connected: boolean; onToggle: (v: boolean) => void }) {
+function IntegrationCard({ i }: { i: Integration }) {
+  const statusTone: Tone = i.live ? 'green' : i.configured ? 'amber' : 'slate';
+  const statusLabel = i.live ? 'Live' : i.configured ? 'Configured' : 'Disabled';
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="font-medium text-slate-800">{name}</div>
-          <div className="text-xs text-slate-400">{provider}</div>
+          <div className="font-medium text-slate-800">{i.name}</div>
+          <div className="text-xs capitalize text-slate-400">Provider · {i.provider}</div>
         </div>
-        <Badge tone={connected ? 'green' : 'slate'}>{connected ? 'Connected' : 'Disabled'}</Badge>
+        <Badge tone={statusTone}>{statusLabel}</Badge>
       </div>
-      <div className="mt-3 space-y-2">
-        <Field label="API Key"><Input type="password" defaultValue="••••••••••••" /></Field>
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-sm text-slate-600">Enabled</span>
-          <Toggle checked={connected} onChange={onToggle} />
-        </div>
+      <div className="mt-3 flex items-center gap-4 border-t border-slate-100 pt-3 text-xs">
+        <span className="flex items-center gap-1.5 text-slate-500">
+          <span className={`h-2 w-2 rounded-full ${i.live ? 'bg-green-500' : 'bg-slate-300'}`} />
+          {i.live ? 'Live mode' : 'Test / off'}
+        </span>
+        <span className="flex items-center gap-1.5 text-slate-500">
+          <span className={`h-2 w-2 rounded-full ${i.configured ? 'bg-green-500' : 'bg-amber-500'}`} />
+          {i.configured ? 'Credentials set' : 'Needs credentials'}
+        </span>
       </div>
     </div>
   );
 }
 
 export function IntegrationsPage() {
-  const [tab, setTab] = useState('airpay');
-  const [mode, setMode] = useState<'Test' | 'Live'>('Test');
-  const [comm, setComm] = useState({ email: true, sms: false, whatsapp: true });
+  const { data, isLoading } = useQuery({ queryKey: ['security', 'integrations'], queryFn: securityApi.getIntegrations });
 
-  const txnCols: Column<MockTxn>[] = [
-    { header: 'Txn ID', className: 'font-mono text-xs text-slate-600', render: (t) => t.id },
-    { header: 'Booking', className: 'font-mono text-xs text-slate-600', render: (t) => t.booking },
-    { header: 'Gateway', render: (t) => t.gateway },
-    { header: 'Amount', align: 'right', className: 'font-medium text-slate-800', render: (t) => `₹${t.amount.toLocaleString('en-IN')}` },
-    { header: 'Status', render: (t) => <Badge tone={TXN_TONE[t.status]}>{t.status}</Badge> },
-    { header: 'Time', render: (t) => <span className="text-slate-500">{t.time}</span> },
-  ];
+  const grouped = (data ?? []).reduce<Record<string, Integration[]>>((acc, i) => {
+    (acc[i.category] ??= []).push(i);
+    return acc;
+  }, {});
+  const categories = Object.keys(grouped).sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
 
   return (
     <AppShell>
-      <PageHeader title="Integrations" subtitle="Payment gateway and communication provider configuration." />
-      <Tabs
-        tabs={[
-          { key: 'airpay', label: 'Airpay' },
-          { key: 'communication', label: 'Communication' },
-        ]}
-        active={tab}
-        onChange={setTab}
-      />
+      <PageHeader title="Integrations" subtitle="Live status of the third-party services this platform connects to, derived from runtime configuration." />
 
-      {tab === 'airpay' && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
-            <div>
-              <div className="font-medium text-slate-800">Airpay Payment Gateway</div>
-              <div className="text-xs text-slate-400">Merchant ID · APX-PARAKKAT-001</div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-500">Mode</span>
-              <div className="flex overflow-hidden rounded-lg border border-slate-200">
-                {(['Test', 'Live'] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setMode(m)}
-                    className={`px-3 py-1.5 text-sm font-medium ${mode === m ? 'bg-blue-600 text-white' : 'bg-white text-slate-600'}`}
-                  >
-                    {m}
-                  </button>
+      {isLoading ? (
+        <SkeletonCardGrid count={6} />
+      ) : (
+        <div className="space-y-6">
+          {categories.map((cat) => (
+            <div key={cat}>
+              <div className="mb-2 text-sm font-semibold text-slate-700">{cat}</div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                {grouped[cat].map((i) => (
+                  <IntegrationCard key={i.key} i={i} />
                 ))}
               </div>
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="mb-3 text-sm font-semibold text-slate-700">API Configuration</div>
-              <div className="space-y-2.5">
-                <Field label="Merchant ID"><Input defaultValue="APX-PARAKKAT-001" /></Field>
-                <Field label="API Key"><Input type="password" defaultValue="••••••••••••••••" /></Field>
-                <Field label="Secret"><Input type="password" defaultValue="••••••••••••••••" /></Field>
-                <div className="pt-1"><Button variant="primary">Save configuration</Button></div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="mb-3 text-sm font-semibold text-slate-700">Webhook</div>
-              <div className="space-y-2.5">
-                <Field label="Webhook URL"><Input readOnly defaultValue="https://api.parakkat.com/api/payments/webhook" /></Field>
-                <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-500">
-                  Last event: <span className="font-medium text-slate-700">payment.success</span> · 2026-07-10 09:11 · <span className="text-green-600">200 OK</span>
-                </div>
-                <div className="pt-1"><Button variant="secondary">Send test event</Button></div>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-2 mt-1 text-sm font-semibold text-slate-700">Transaction Logs</div>
-            <DataTable columns={txnCols} rows={AIRPAY_TXNS} rowKey={(t) => t.id} />
-          </div>
-        </div>
-      )}
-
-      {tab === 'communication' && (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <ChannelCard name="Email" provider="Resend" connected={comm.email} onToggle={(v) => setComm((p) => ({ ...p, email: v }))} />
-          <ChannelCard name="SMS" provider="MSG91" connected={comm.sms} onToggle={(v) => setComm((p) => ({ ...p, sms: v }))} />
-          <ChannelCard name="WhatsApp" provider="Meta Cloud API" connected={comm.whatsapp} onToggle={(v) => setComm((p) => ({ ...p, whatsapp: v }))} />
+          ))}
+          <p className="text-xs text-slate-400">
+            To change a provider or switch to live mode, update the deployment environment configuration — these values are read-only from the portal.
+          </p>
         </div>
       )}
     </AppShell>

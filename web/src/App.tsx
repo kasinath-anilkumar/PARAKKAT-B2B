@@ -42,6 +42,8 @@ function useSessionBootstrap() {
   return ready;
 }
 
+import { useThemeStore } from './store/themeStore';
+
 function AppContent() {
   const ready = useSessionBootstrap();
   useRealtime(); // live multi-user updates once authenticated
@@ -50,6 +52,17 @@ function AppContent() {
 }
 
 export function App() {
+  const theme = useThemeStore((s) => s.theme);
+
+  useEffect(() => {
+    const root = window.document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+  }, [theme]);
+
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>

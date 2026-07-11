@@ -6,6 +6,7 @@ export async function getUserProfile(userId: string) {
     select: {
       id: true,
       email: true,
+      name: true,
       role: true,
       agencyId: true,
       status: true,
@@ -13,7 +14,9 @@ export async function getUserProfile(userId: string) {
       mfaMethod: true,
       mustChangePassword: true,
       createdAt: true,
+      agency: { select: { legalName: true } },
     },
   });
-  return user;
+  const { agency, ...rest } = user;
+  return { ...rest, agencyName: agency?.legalName ?? null };
 }

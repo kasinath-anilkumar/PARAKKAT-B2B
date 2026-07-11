@@ -6,6 +6,7 @@ import { CountUp } from '../../components/ui/CountUp';
 import { SkeletonRows } from '../../components/ui/Skeleton';
 import { useAuth } from '../../hooks/useAuth';
 import * as dashboardApi from '../../api/dashboard.api';
+import * as documentsApi from '../../api/documents.api';
 import type { Invoice } from '../../types/dashboard';
 
 const STATUS_TONE: Record<Invoice['status'], Tone> = { ISSUED: 'amber', PARTIALLY_PAID: 'blue', PAID: 'green', VOID: 'slate', REFUNDED: 'violet' };
@@ -37,6 +38,13 @@ export function AgencyPaymentsPage() {
   });
 
   const items = useMemo(() => invoices?.items ?? [], [invoices]);
+  const latestInvoice = useMemo(
+    () => [...items].sort((a, b) => b.issuedAt.localeCompare(a.issuedAt))[0],
+    [items],
+  );
+  const runDownload = (fn: () => Promise<void>) => {
+    fn().catch((e) => setError(extractError(e)));
+  };
   const openInvoices = items.filter(settleable);
   const selectedInvoice = openInvoices.find((i) => i.id === payId);
   const selectedRemaining = selectedInvoice ? remainingOf(selectedInvoice) : 0;
@@ -130,10 +138,22 @@ export function AgencyPaymentsPage() {
 
       {tab === 'documents' && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          {['Latest Invoice', 'Credit Statement', 'Account Statement'].map((d) => (
-            <div key={d} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-4">
-              <span className="text-sm font-medium text-slate-700">{d}</span>
-              <Button variant="secondary" onClick={() => alert(`${d} downloaded.`)}>Download</Button>
+          {[
+            {
+              label: 'Latest Invoice',
+              hint: latestInvoice ? latestInvoice.number : 'No invoices yet',
+              disabled: !latestInvoice,
+              action: () => documentsApi.downloadInvoicePdf(latestInvoice!.id, latestInvoice!.number),
+            },
+            { label: 'Credit Statement', hint: 'Open credit balance', disabled: false, action: () => documentsApi.downloadCreditStatement() },
+            { label: 'Account Statement', hint: 'Full ledger', disabled: false, action: () => documentsApi.downloadAccountStatement() },
+          ].map((d) => (
+            <div key={d.label} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-4">
+              <div>
+                <div className="text-sm font-medium text-slate-700">{d.label}</div>
+                <div className="text-xs text-slate-400">{d.hint}</div>
+              </div>
+              <Button variant="secondary" disabled={d.disabled} onClick={() => runDownload(d.action)}>Download</Button>
             </div>
           ))}
         </div>
@@ -183,7 +203,7 @@ export function AgencyPaymentsPage() {
           title={`Tax Invoice · ${viewing.number}`}
           onClose={() => setViewing(null)}
           wide
-          footer={<Button variant="primary" onClick={() => alert('Invoice PDF downloaded.')}>Download PDF</Button>}
+          footer={<Button variant="primary" onClick={() => runDownload(() => documentsApi.downloadInvoicePdf(viewing.id, viewing.number))}>Download PDF</Button>}
         >
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <Badge tone={STATUS_TONE[viewing.status]}>{viewing.status}</Badge>

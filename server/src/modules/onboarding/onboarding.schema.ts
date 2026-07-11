@@ -22,6 +22,7 @@ export const draftInputSchema = z
     legalName: z.string().min(2).max(200),
     gstin: gstinSchema,
     pan: panSchema,
+    isIndependent: z.boolean().default(false),
     addressLine1: z.string().min(1).max(200),
     addressLine2: z.string().max(200),
     city: z.string().min(1).max(100),
@@ -44,9 +45,18 @@ export const draftInputSchema = z
 
 export type DraftInput = z.infer<typeof draftInputSchema>;
 
-// --- Submit (full): all fields required and well-formed. addressLine2 stays optional. ---
+// --- Submit (full): all fields required and well-formed. addressLine2 and gstin conditionally optional. ---
 export const submitApplicationSchema = draftInputSchema.required().extend({
   addressLine2: z.string().max(200).optional(),
+  gstin: gstinSchema.optional(),
+}).superRefine((data, ctx) => {
+  if (!data.isIndependent && !data.gstin) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'GSTIN is required for business agencies',
+      path: ['gstin'],
+    });
+  }
 });
 
 export type SubmitApplicationInput = z.infer<typeof submitApplicationSchema>;

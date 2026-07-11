@@ -5,6 +5,7 @@ import { AppShell } from '../components/layout/AppShell';
 import { Skeleton, SkeletonForm } from '../components/ui/Skeleton';
 import * as adminApi from '../api/admin.api';
 import type { ApplicationDetail } from '../types/admin';
+import { formatPaymentTerms } from '../shared/format';
 
 function StatusPill({ status }: { status: string }) {
   const color =
@@ -24,7 +25,7 @@ export function ApplicationDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [resubReason, setResubReason] = useState('');
-  const [tier, setTier] = useState('STANDARD');
+  const [tier, setTier] = useState('A');
   const [signingUrl, setSigningUrl] = useState<string | null>(null);
 
   const { data: app, isLoading } = useQuery({
@@ -81,8 +82,9 @@ export function ApplicationDetailPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Section title="Business">
+          <Row label="Business type" value={app.isIndependent ? 'Independent Agent' : 'Standard Agency'} />
           <Row label="Legal name" value={app.legalName} />
-          <Row label="GSTIN" value={app.gstin} />
+          {!app.isIndependent && <Row label="GSTIN" value={app.gstin} />}
           <Row label="PAN (masked)" value={app.pan} />
           <Row label="Representative" value={app.repName} />
           <Row label="Rep email" value={app.repEmail} />
@@ -125,7 +127,7 @@ export function ApplicationDetailPage() {
             <Row label="Tier" value={app.agency.commercialConfigurations[0].tier} />
             <Row label="Payment mode" value={app.agency.commercialConfigurations[0].paymentMode} />
             <Row label="Credit limit" value={`₹${app.agency.commercialConfigurations[0].creditLimit}`} />
-            <Row label="Payment terms" value={app.agency.commercialConfigurations[0].paymentTerms} />
+            <Row label="Payment terms" value={formatPaymentTerms(app.agency.commercialConfigurations[0].paymentTerms)} />
             <Row label="Markup %" value={app.agency.commercialConfigurations[0].markupPct} />
           </Section>
         )}
@@ -226,7 +228,7 @@ function ActionsForState(props: {
               onChange={(e) => setTier(e.target.value)}
               className="rounded border border-slate-300 px-3 py-2 text-sm"
             >
-              {Object.keys(tiers ?? { STANDARD: 1 }).map((t) => (
+              {Object.keys(tiers ?? { A: 1 }).map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>

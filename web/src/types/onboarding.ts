@@ -28,6 +28,7 @@ export interface DraftFields {
   bankAccount?: string;
   ifsc?: string;
   accountHolder?: string;
+  isIndependent?: boolean;
 }
 
 export interface Application extends DraftFields {

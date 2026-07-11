@@ -1,3 +1,4 @@
+import type { BookingState } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 
 function dayKey(d: Date): string {
@@ -178,21 +179,35 @@ export async function adminSummary(range: DateRange) {
 }
 
 /** Agency-scoped dashboard data (AGENCY/AGENT). */
-export async function agencySummary(agencyId: string, range: DateRange) {
+/**
+ * Agency dashboard summary. When `agentId` is supplied (agent's own overview),
+ * the booking metrics are scoped to that agent; credit/AR stays agency-level (an
+ * agent transacts on the agency's credit line), and `totalSpend` becomes the
+ * agent's own booking value rather than agency-wide collections.
+ */
+export async function agencySummary(agencyId: string, range: DateRange, agentId?: string) {
+  const bookingWhere = agentId ? { agencyId, agentId } : { agencyId };
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const liveStates = { notIn: ['CANCELLED', 'EXPIRED'] as BookingState[] };
   // One transaction / one connection for the whole agency dashboard (incl. the
   // balance inputs, inlined so there's no nested query fan-out).
-  const [outstandingAgg, config, totalBookings, byStatus, recent, revenueAgg, bookingsInRange] =
+  const [outstandingAgg, config, totalBookings, byStatus, recent, revenueAgg, bookingsInRange, agentValueAgg, todayBookings, upcomingCheckIns, activeAgents] =
     await prisma.$transaction([
       prisma.invoice.aggregate({ where: { agencyId, paymentMode: 'CREDIT', status: 'ISSUED' }, _sum: { amount: true } }),
       prisma.commercialConfiguration.findFirst({ where: { agencyId, isCurrent: true } }),
-      prisma.booking.count({ where: { agencyId } }),
-      prisma.booking.groupBy({ by: ['state'], where: { agencyId }, _count: true, orderBy: { state: 'asc' } }),
-      prisma.booking.findMany({ where: { agencyId }, orderBy: { createdAt: 'desc' }, take: 6 }),
+      prisma.booking.count({ where: bookingWhere }),
+      prisma.booking.groupBy({ by: ['state'], where: bookingWhere, _count: true, orderBy: { state: 'asc' } }),
+      prisma.booking.findMany({ where: bookingWhere, orderBy: { createdAt: 'desc' }, take: 6 }),
       prisma.payment.aggregate({ where: { agencyId, direction: 'INBOUND', status: 'SUCCEEDED' }, _sum: { amount: true } }),
       prisma.booking.findMany({
-        where: { agencyId, createdAt: { gte: range.from, lte: range.to } },
+        where: { ...bookingWhere, createdAt: { gte: range.from, lte: range.to } },
         select: { createdAt: true, agencyPrice: true },
       }),
+      prisma.booking.aggregate({ where: { ...bookingWhere, state: liveStates }, _sum: { agencyPrice: true } }),
+      prisma.booking.count({ where: { ...bookingWhere, createdAt: { gte: startOfToday } } }),
+      prisma.booking.count({ where: { ...bookingWhere, checkIn: { gte: startOfToday }, state: liveStates } }),
+      prisma.user.count({ where: { agencyId, role: 'AGENT', status: 'ACTIVE' } }),
     ]);
 
   const outstanding = Number(outstandingAgg._sum?.amount ?? 0);
@@ -216,10 +231,13 @@ export async function agencySummary(agencyId: string, range: DateRange) {
   return {
     kpis: {
       totalBookings,
-      totalSpend: Number(revenueAgg._sum?.amount ?? 0),
+      totalSpend: agentId ? Number(agentValueAgg._sum?.agencyPrice ?? 0) : Number(revenueAgg._sum?.amount ?? 0),
       outstanding: balance.outstanding,
       creditLimit: balance.creditLimit,
       available: balance.available,
+      todayBookings,
+      upcomingCheckIns,
+      activeAgents,
     },
     bookingsByStatus: byStatus.map((s) => ({ state: s.state, count: s._count })),
     series,

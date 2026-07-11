@@ -1,32 +1,30 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { AppShell } from '../../components/layout/AppShell';
-import { Badge, Button, DataTable, Field, Input, PageHeader, Tabs, Toggle, type Column } from '../../components/ui/kit';
+import { Badge, PageHeader, Tabs } from '../../components/ui/kit';
 import { useAuth } from '../../hooks/useAuth';
+import * as authApi from '../../api/auth.api';
 import { ChangePasswordCard, MustChangePasswordBanner } from '../../shared/ChangePasswordCard';
-import { AGENT_LOGIN_HISTORY, AGENT_SESSIONS, type AgentSession, type LoginEvent } from '../mock';
+import { MfaCard } from '../../shared/MfaCard';
+
+const fmtDate = (d?: string) => (d ? new Date(d).toLocaleDateString('en-IN') : '—');
+
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex justify-between gap-4 border-b border-slate-100 py-2 text-sm last:border-0">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right font-medium text-slate-900">{value ?? '—'}</span>
+    </div>
+  );
+}
 
 export function AgentProfilePage() {
   const { user } = useAuth();
   const [tab, setTab] = useState('personal');
-  const [sessions, setSessions] = useState<AgentSession[]>(AGENT_SESSIONS);
-  const [mfa, setMfa] = useState(false);
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: authApi.getMe });
 
-  const sessionCols: Column<AgentSession>[] = [
-    { header: 'IP', className: 'font-mono text-xs text-slate-600', render: (s) => s.ip },
-    { header: 'Device', render: (s) => s.device },
-    { header: 'Started', render: (s) => <span className="text-slate-500">{s.started}</span> },
-    {
-      header: 'Actions',
-      align: 'right',
-      render: (s) => (s.current ? <Badge tone="green">This device</Badge> : <Button variant="danger" onClick={() => setSessions((p) => p.filter((x) => x.id !== s.id))}>Revoke</Button>),
-    },
-  ];
-  const loginCols: Column<LoginEvent>[] = [
-    { header: 'IP', className: 'font-mono text-xs text-slate-600', render: (l) => l.ip },
-    { header: 'Device', render: (l) => l.device },
-    { header: 'Time', render: (l) => <span className="text-slate-500">{l.time}</span> },
-    { header: 'Result', render: (l) => <Badge tone={l.result === 'Success' ? 'green' : 'red'}>{l.result}</Badge> },
-  ];
+  const profile = me ?? user;
+  const initials = (profile?.name ?? profile?.email ?? '?').slice(0, 2).toUpperCase();
 
   return (
     <AppShell>
@@ -44,57 +42,30 @@ export function AgentProfilePage() {
       />
 
       {tab === 'personal' && (
-        <div className="max-w-xl space-y-3">
-          <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="max-w-xl">
+          <div className="rounded-xl border border-slate-200 bg-white p-5">
             <div className="mb-4 flex items-center gap-4">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-800 text-lg font-semibold text-white">
-                {(user?.email ?? '?').slice(0, 2).toUpperCase()}
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-slate-800 text-lg font-semibold text-white">{initials}</div>
+              <div>
+                <div className="text-base font-semibold text-slate-800">{profile?.name ?? '—'}</div>
+                <div className="text-sm text-slate-400">{profile?.email}</div>
               </div>
-              <label className="cursor-pointer">
-                <span className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">Change photo</span>
-                <input type="file" accept="image/*" className="hidden" />
-              </label>
             </div>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Full name"><Input defaultValue="Rahul Menon" /></Field>
-              <Field label="Mobile number"><Input defaultValue="+91 98470 11223" /></Field>
-              <Field label="Email"><Input defaultValue={user?.email ?? 'agent@agency.com'} /></Field>
-              <Field label="Agency"><Input defaultValue="Holiday Planners" readOnly /></Field>
-            </div>
-            <div className="mt-3 flex justify-end"><Button variant="primary">Save changes</Button></div>
+            <Row label="Full name" value={profile?.name} />
+            <Row label="Email" value={profile?.email} />
+            <Row label="Role" value={<Badge tone="blue">{profile?.role}</Badge>} />
+            <Row label="Agency" value={me?.agencyName} />
+            <Row label="Status" value={<Badge tone={me?.status === 'ACTIVE' ? 'green' : 'slate'}>{me?.status ?? 'ACTIVE'}</Badge>} />
+            <Row label="Member since" value={fmtDate(me?.createdAt)} />
+            <p className="mt-3 text-xs text-slate-400">Your name and agency are managed by your agency admin. Contact them to update these details.</p>
           </div>
         </div>
       )}
 
       {tab === 'account' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <ChangePasswordCard />
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-slate-700">Two-factor authentication</div>
-                  <div className="text-xs text-slate-400">Protect your account with an authenticator app.</div>
-                </div>
-                <Toggle checked={mfa} onChange={setMfa} />
-              </div>
-              {mfa && (
-                <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600">
-                  <div className="mb-2 flex h-28 w-28 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white text-xs text-slate-400">QR code</div>
-                  Scan, then enter the 6-digit code.
-                  <div className="mt-2 flex gap-2"><Input placeholder="123456" className="w-28" /><Button variant="primary">Verify</Button></div>
-                </div>
-              )}
-            </div>
-          </div>
-          <div>
-            <div className="mb-2 text-sm font-semibold text-slate-700">Active sessions</div>
-            <DataTable columns={sessionCols} rows={sessions} rowKey={(s) => s.id} />
-          </div>
-          <div>
-            <div className="mb-2 text-sm font-semibold text-slate-700">Login history</div>
-            <DataTable columns={loginCols} rows={AGENT_LOGIN_HISTORY} rowKey={(l) => l.id} />
-          </div>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <ChangePasswordCard />
+          <MfaCard />
         </div>
       )}
     </AppShell>

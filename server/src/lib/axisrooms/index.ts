@@ -8,8 +8,17 @@ export type {
   AvailabilityQuery,
   CreateReservationInput,
   CreateReservationResult,
+  DayUseOption,
+  OccupancyConfig,
+  RatePlan,
+  RatePlanCode,
+  RatesQuery,
+  ReservationRoom,
   Resort,
+  Restrictions,
   RoomTypeAvailability,
+  RoomTypeRates,
+  StayType,
 } from './axisrooms.types';
 
 let instance: AxisRoomsClient | undefined;

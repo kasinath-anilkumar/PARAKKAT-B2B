@@ -4,6 +4,7 @@ import { ApiError } from '../../utils/apiError';
 import type { AuthUser } from '../../types/express';
 import { assertAgentCan } from '../agents/agents.service';
 import * as bookingService from './booking.service';
+import * as bookingVoucher from './voucher.service';
 
 const adminActor = (user: AuthUser) => ({ actorId: user.id, actorRole: user.role as ActorRole });
 
@@ -55,6 +56,28 @@ export async function list(req: Request, res: Response): Promise<void> {
   const { page, pageSize } = req.query as unknown as { page: number; pageSize: number };
   const result = await bookingService.listBookings(agencyId, page, pageSize);
   res.status(200).json(result);
+}
+
+/** Guests derived from lead-guest data on bookings. Agency sees all; agent sees own. */
+export async function guests(req: Request, res: Response): Promise<void> {
+  const { agencyId } = agentActor(req.user!);
+  const agentId = req.user!.role === 'AGENT' ? req.user!.id : undefined;
+  res.status(200).json(await bookingService.listGuests(agencyId, agentId));
+}
+
+/** Booking voucher PDF. ADMIN any; AGENCY own agency; AGENT own bookings. */
+export async function voucherPdf(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const scope =
+    user.role === 'ADMIN'
+      ? {}
+      : { agencyId: agentActor(user).agencyId, agentId: user.role === 'AGENT' ? user.id : undefined };
+  const { buffer, fileName } = await bookingVoucher.renderVoucherPdf(req.params.id, scope);
+  res.status(200);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+  res.setHeader('Content-Length', buffer.length);
+  res.end(buffer);
 }
 
 /** Admin-wide list across all agencies (read-only oversight). */

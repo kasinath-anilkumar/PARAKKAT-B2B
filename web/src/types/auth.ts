@@ -9,6 +9,11 @@ export interface AuthUser {
   mfaMethod: 'NONE' | 'TOTP' | 'EMAIL';
   // v3 §10.2 — true after a temporary/admin-set password until self-service change.
   mustChangePassword?: boolean;
+  // Present on the /users/me profile read (not on the minimal login session user).
+  name?: string | null;
+  agencyName?: string | null;
+  status?: 'ACTIVE' | 'SUSPENDED';
+  createdAt?: string;
 }
 
 export type LoginResponse =

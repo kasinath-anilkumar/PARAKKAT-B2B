@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/layout/AppShell';
 import {
   Badge,
@@ -58,10 +59,10 @@ export function AgencyAgentsPage() {
     {
       header: 'Agent',
       render: (a) => (
-        <div>
+        <Link to={`/agency/agents/${a.id}`} className="block hover:underline">
           <div className="font-medium text-slate-800">{a.name ?? '—'}</div>
           <div className="text-xs text-slate-400">{a.email}</div>
-        </div>
+        </Link>
       ),
     },
     {

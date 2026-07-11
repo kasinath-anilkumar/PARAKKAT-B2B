@@ -2,103 +2,59 @@ import { httpClient } from './httpClient';
 
 export type RatePlan = 'EP' | 'CP' | 'MAP' | 'AP';
 
-export interface RatePlanRate {
-  id: string;
-  plan: RatePlan;
-  baseRate: string;
-  effectiveFrom: string | null;
-  effectiveTo: string | null;
-}
-
-// v3 §2.2 — child age band: inclusive [minAge, maxAge] → per-night charge.
-export interface ChildBand {
-  minAge: number;
-  maxAge: number;
-  charge: number;
-}
-
-export interface RoomTypePricing {
-  id: string;
+// --- v4 §1 — AxisRooms read-through (source of truth; net rates, pre-markup) ---
+export interface AxisRatesRoom {
   resortId: string;
+  resortName: string;
   roomTypeId: string;
   roomTypeName: string;
-  baseOccupancy: number;
-  maxAdults: number;
-  maxChildren: number;
+  availableCount: number;
+  occupancy: {
+    baseOccupancy: number;
+    maxAdults: number;
+    maxChildren: number;
+    maxOccupancy: number;
+    extraAdultCharge: number;
+    childCharge: number;
+    extraBedCharge: number;
+  };
+  restrictions: {
+    minNights: number;
+    maxNights?: number;
+    closedToArrival: boolean;
+    closedToDeparture: boolean;
+    stopSell: boolean;
+  };
+  dayUseRate: number | null;
+  plans: { plan: RatePlan; nights: number; avgNightlyRate: number; totalRate: number }[];
+}
+
+export interface AxisRatesOverview {
+  resorts: { id: string; name: string; location: string }[];
+  resortId: string;
+  rooms: AxisRatesRoom[];
+}
+
+export async function getAxisRates(params: { resortId?: string; checkIn: string; checkOut: string }): Promise<AxisRatesOverview> {
+  return (await httpClient.get('/catalog/axis-rates', { params })).data;
+}
+
+// --- Admin catalog (AxisRooms resorts + room types; read-only) ----------------
+export interface CatalogRoom {
+  roomTypeId: string;
+  roomTypeName: string;
   maxOccupancy: number;
-  extraAdultCharge: string;
-  childCharge: string;
-  extraBedCharge: string;
-  childBands: ChildBand[] | null;
-  active: boolean;
-  ratePlans: RatePlanRate[];
+  baseRatePerNight: number;
+  dayUseRate: number | null;
 }
-
-export interface UpsertPricingInput {
-  resortId: string;
-  roomTypeId: string;
-  roomTypeName: string;
-  baseOccupancy: number;
-  maxAdults: number;
-  maxChildren: number;
-  maxOccupancy: number;
-  extraAdultCharge: number;
-  childCharge: number;
-  extraBedCharge: number;
-  childBands?: ChildBand[];
-  rates: { plan: RatePlan; baseRate: number }[];
-}
-
-export async function listPricing(): Promise<RoomTypePricing[]> {
-  return (await httpClient.get('/pricing/room-types')).data.items;
-}
-
-export async function upsertPricing(input: UpsertPricingInput): Promise<RoomTypePricing> {
-  return (await httpClient.post('/pricing/room-types', input)).data;
-}
-
-export async function deletePricing(id: string): Promise<{ deleted: boolean }> {
-  return (await httpClient.delete(`/pricing/room-types/${id}`)).data;
-}
-
-// --- v3 §2.4 — rate calendar (dated windows) ---
-export interface RateWindow {
+export interface CatalogResort {
   id: string;
-  plan: RatePlan;
-  baseRate: string;
-  effectiveFrom: string | null;
-  effectiveTo: string | null;
-  active: boolean;
-  resortId: string;
-  roomTypeId: string;
-  roomTypeName: string;
+  name: string;
+  location: string;
+  roomCount: number;
+  rooms: CatalogRoom[];
 }
 
-export interface RateCalendarInput {
-  resortId: string;
-  roomTypeIds: string[];
-  plans: RatePlan[];
-  baseRate: number;
-  effectiveFrom: string;
-  effectiveTo: string;
-  note?: string;
+export async function getAdminCatalog(): Promise<{ resorts: CatalogResort[] }> {
+  return (await httpClient.get('/catalog/admin/overview')).data;
 }
-
-export async function listRateCalendar(resortId?: string): Promise<RateWindow[]> {
-  return (await httpClient.get('/pricing/rate-calendar', { params: resortId ? { resortId } : {} })).data.items;
-}
-
-export async function applyRateCalendar(input: RateCalendarInput): Promise<{ created: number; updated: number; skipped: string[] }> {
-  return (await httpClient.post('/pricing/rate-calendar', input)).data;
-}
-
-export async function deleteRateWindow(id: string): Promise<{ deleted: boolean }> {
-  return (await httpClient.delete(`/pricing/rate-calendar/${id}`)).data;
-}
-
-export const PLAN_LABEL: Record<RatePlan, string> = {
-  EP: 'EP · Room only',
-  CP: 'CP · Breakfast',
-  MAP: 'MAP · Half board',
-  AP: 'AP · Full board',
-};

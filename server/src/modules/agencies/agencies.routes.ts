@@ -7,14 +7,26 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import * as agenciesController from './agencies.controller';
 import { gstinSchema, mobileSchema, panSchema } from '../onboarding/onboarding.schema';
 
+import { uploadAgencyDocs } from '../../middleware/upload';
+
 export const agenciesRouter = Router();
 
 const createAgencySchema = z.object({
   legalName: z.string().min(2).max(200),
-  gstin: gstinSchema,
+  gstin: gstinSchema.optional(),
   pan: panSchema,
   contactEmail: z.string().email(),
   contactPhone: mobileSchema,
+  tier: z.string().min(1),
+  isIndependent: z.boolean().optional(),
+}).superRefine((data, ctx) => {
+  if (!data.isIndependent && !data.gstin) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'GSTIN is required for business agencies',
+      path: ['gstin'],
+    });
+  }
 });
 
 /**
@@ -44,8 +56,34 @@ agenciesRouter.post(
   '/',
   authenticate,
   requireRole('ADMIN'),
+  uploadAgencyDocs,
   validate({ body: createAgencySchema }),
   asyncHandler(agenciesController.create),
+);
+
+/**
+ * @openapi
+ * /agencies/me:
+ *   get:
+ *     summary: The signed-in agency's own profile, commercial terms and documents (AGENCY)
+ *     tags: [Agencies]
+ *     security: [{ bearerAuth: [] }]
+ */
+agenciesRouter.get('/me', authenticate, requireRole('AGENCY'), asyncHandler(agenciesController.myProfile));
+
+/**
+ * @openapi
+ * /agencies/{id}/detail:
+ *   get:
+ *     summary: Rich admin view of an agency — profile, terms, users, docs, financials (ADMIN/VERIFIER)
+ *     tags: [Agencies]
+ *     security: [{ bearerAuth: [] }]
+ */
+agenciesRouter.get(
+  '/:id/detail',
+  authenticate,
+  requireRole('ADMIN', 'VERIFIER'),
+  asyncHandler(agenciesController.getDetail),
 );
 
 /**
@@ -61,6 +99,32 @@ agenciesRouter.get(
   authenticate,
   requireOwnAgency((req) => req.params.id),
   asyncHandler(agenciesController.getById),
+);
+
+/**
+ * @openapi
+ * /agencies/{id}:
+ *   patch:
+ *     summary: Edit an agency's profile fields (ADMIN)
+ *     tags: [Agencies]
+ *     security: [{ bearerAuth: [] }]
+ */
+agenciesRouter.patch(
+  '/:id',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({
+    body: z
+      .object({
+        legalName: z.string().min(2).max(200).optional(),
+        gstin: gstinSchema.optional(),
+        pan: panSchema.optional(),
+        contactEmail: z.string().email().optional(),
+        contactPhone: mobileSchema.optional(),
+      })
+      .refine((d) => Object.keys(d).length > 0, { message: 'No editable fields provided' }),
+  }),
+  asyncHandler(agenciesController.update),
 );
 
 /**
@@ -106,4 +170,25 @@ agenciesRouter.delete(
   authenticate,
   requireRole('ADMIN'),
   asyncHandler(agenciesController.remove),
+);
+
+/**
+ * @openapi
+ * /agencies/{id}/commercial-config:
+ *   post:
+ *     summary: Update an agency's commercial configuration (ADMIN)
+ *     tags: [Agencies]
+ *     security: [{ bearerAuth: [] }]
+ */
+agenciesRouter.post(
+  '/:id/commercial-config',
+  authenticate,
+  requireRole('ADMIN'),
+  validate({
+    body: z.object({
+      tier: z.string().min(1),
+      markupPct: z.number().min(0).max(100).optional(), // per-agency override
+    }),
+  }),
+  asyncHandler(agenciesController.updateCommercialConfig),
 );

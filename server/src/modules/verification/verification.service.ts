@@ -31,6 +31,9 @@ export async function initiateChecksForApplication(applicationId: string): Promi
   const digio = getDigio();
 
   for (const checkType of MANDATORY_CHECKS) {
+    if (checkType === 'GST' && application.isIndependent) {
+      continue;
+    }
     const existing = await prisma.verification.findFirst({
       where: { applicationId, checkType },
     });
@@ -207,7 +210,8 @@ export async function evaluateAutoProgression(applicationId: string): Promise<vo
     where: { applicationId, checkType: { in: MANDATORY_CHECKS } },
   });
   const statuses = verifications.map((v) => v.status);
-  const decision = decideProgression(statuses, MANDATORY_CHECKS.length);
+  const expectedCount = application.isIndependent ? MANDATORY_CHECKS.length - 1 : MANDATORY_CHECKS.length;
+  const decision = decideProgression(statuses, expectedCount);
 
   if (decision.action === 'wait') return;
 

@@ -35,3 +35,18 @@ dashboardRouter.get(
     res.status(200).json(await agencySummary(req.user!.agencyId, defaultRange()));
   }),
 );
+
+/**
+ * @openapi
+ * /dashboard/agent:
+ *   get: { summary: Agent's own overview — booking metrics scoped to the agent (AGENT), tags: [Dashboard], security: [{ bearerAuth: [] }] }
+ */
+dashboardRouter.get(
+  '/agent',
+  authenticate,
+  requireRole('AGENT'),
+  asyncHandler(async (req, res) => {
+    if (!req.user!.agencyId) throw ApiError.forbidden('No agency for this user');
+    res.status(200).json(await agencySummary(req.user!.agencyId, defaultRange(), req.user!.id));
+  }),
+);

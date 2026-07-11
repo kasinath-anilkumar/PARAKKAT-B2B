@@ -6,6 +6,7 @@ import { Badge, Button, DataTable, Modal, PageHeader, SearchInput, Stat, Tabs, t
 import { CountUp } from '../components/ui/CountUp';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import * as bookingApi from '../api/booking.api';
+import * as documentsApi from '../api/documents.api';
 import type { Booking } from '../types/booking';
 import { CATEGORY_TONE, STATE_TONE, bookingCategory, canCancel, canPay, money, stateLabel, type Category } from './bookingView';
 
@@ -123,7 +124,7 @@ export function BookingsManager({ title, subtitle }: { title: string; subtitle: 
             <>
               {canPay(selected) && <Button variant="secondary" disabled={busy} onClick={() => { setError(null); payM.mutate(selected.id); }}>Pay {money(selected.agencyPrice)}</Button>}
               {canCancel(selected) && <Button variant="danger" disabled={busy} onClick={() => { setError(null); cancelM.mutate(selected.id); }}>Cancel booking</Button>}
-              <Button variant="primary" onClick={() => alert('Voucher PDF downloaded.')}>Download Voucher</Button>
+              <Button variant="primary" onClick={() => { setError(null); documentsApi.downloadVoucher(selected.id, selected.id.slice(0, 8)).catch((e) => setError(extractError(e))); }}>Download Voucher</Button>
             </>
           }
         >

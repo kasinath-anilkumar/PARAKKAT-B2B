@@ -3,6 +3,7 @@ import { z } from 'zod';
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
 const planEnum = z.enum(['EP', 'CP', 'MAP', 'AP']);
+const stayTypeEnum = z.enum(['OVERNIGHT', 'DAY_USE']);
 
 // v3 §2.2 — child ages as a CSV query param (e.g. "4,9"), parsed to number[].
 const childAgesCsv = z
@@ -14,7 +15,8 @@ const childAgesCsv = z
 export const availabilityQuerySchema = z.object({
   resortId: z.string().min(1),
   checkIn: dateString,
-  checkOut: dateString,
+  checkOut: dateString.optional(),
+  stayType: stayTypeEnum.optional(),
   guests: z.coerce.number().int().positive().max(20),
   adults: z.coerce.number().int().positive().max(20).optional(),
   children: z.coerce.number().int().min(0).max(20).optional(),
@@ -36,7 +38,8 @@ export const createBookingSchema = z.object({
   resortId: z.string().min(1),
   roomTypeId: z.string().min(1),
   checkIn: dateString,
-  checkOut: dateString,
+  checkOut: dateString.optional(), // optional for DAY_USE (same-day)
+  stayType: stayTypeEnum.optional(), // default OVERNIGHT
   guests: z.number().int().positive().max(20),
   plan: planEnum.optional(),
   adults: z.number().int().positive().max(20).optional(),

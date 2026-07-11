@@ -40,7 +40,10 @@ function datesOverlapStr(s1: string, e1: string, s2: string, e2: string): boolea
 
 const roomKey = (resortId: string, roomTypeId: string) => `${resortId}::${roomTypeId}`;
 
+type StayType = 'OVERNIGHT' | 'DAY_USE';
+
 interface Occupancy {
+  stayType: StayType;
   checkIn: string;
   checkOut: string;
   adults: number;
@@ -56,6 +59,7 @@ interface CartLine {
   roomTypeId: string;
   roomTypeName: string;
   plan: RatePlan;
+  stayType: StayType;
   checkIn: string;
   checkOut: string;
   adults: number;
@@ -75,7 +79,8 @@ export function SearchPage() {
 
   const [destination, setDestination] = useState('all');
   const [searchText, setSearchText] = useState('');
-  const [occ, setOcc] = useState<Occupancy>({ checkIn: '', checkOut: '', adults: 2, children: 0, childAges: [], extraBeds: 0 });
+  const [occ, setOcc] = useState<Occupancy>({ stayType: 'OVERNIGHT', checkIn: '', checkOut: '', adults: 2, children: 0, childAges: [], extraBeds: 0 });
+  const isDayUse = occ.stayType === 'DAY_USE';
 
   // Availability result for the currently-searched dates (null = not searched yet).
   const [searched, setSearched] = useState<{ occ: Occupancy; avail: Record<string, PricedRoomType> } | null>(null);
@@ -107,20 +112,24 @@ export function SearchPage() {
 
   const today = todayStr();
   const maxCheckIn = addDaysStr(today, MAX_ADVANCE_DAYS);
-  const nights = occ.checkIn && occ.checkOut ? nightsBetweenStr(occ.checkIn, occ.checkOut) : 0;
+  const nights = !isDayUse && occ.checkIn && occ.checkOut ? nightsBetweenStr(occ.checkIn, occ.checkOut) : 0;
   const dateError =
-    !occ.checkIn || !occ.checkOut
+    !occ.checkIn
       ? null
       : occ.checkIn < today
         ? 'Check-in cannot be in the past.'
         : occ.checkIn > maxCheckIn
           ? `Check-in cannot be more than ${MAX_ADVANCE_DAYS} days ahead.`
-          : nights <= 0
-            ? 'Check-out must be after check-in.'
-            : nights > MAX_STAY_NIGHTS
-              ? `A single booking cannot exceed ${MAX_STAY_NIGHTS} nights.`
-              : null;
-  const datesValid = !!occ.checkIn && !!occ.checkOut && !dateError;
+          : isDayUse
+            ? null
+            : !occ.checkOut
+              ? null
+              : nights <= 0
+                ? 'Check-out must be after check-in.'
+                : nights > MAX_STAY_NIGHTS
+                  ? `A single booking cannot exceed ${MAX_STAY_NIGHTS} nights.`
+                  : null;
+  const datesValid = !!occ.checkIn && (isDayUse || !!occ.checkOut) && !dateError;
 
   const destinations = useMemo(() => Array.from(new Set(rooms.map((r) => r.location))), [rooms]);
   const visibleRooms = useMemo(
@@ -145,7 +154,7 @@ export function SearchPage() {
     const resortIds = [...new Set(rooms.map((r) => r.resortId))];
     const settled = await Promise.allSettled(
       resortIds.map((id) =>
-        bookingApi.searchAvailability({ resortId: id, checkIn: occ.checkIn, checkOut: occ.checkOut, guests: occ.adults + occ.children, adults: occ.adults, children: occ.children, childAges: occ.childAges, extraBeds: occ.extraBeds }),
+        bookingApi.searchAvailability({ resortId: id, checkIn: occ.checkIn, checkOut: isDayUse ? undefined : occ.checkOut, stayType: occ.stayType, guests: occ.adults + occ.children, adults: occ.adults, children: occ.children, childAges: occ.childAges, extraBeds: occ.extraBeds }),
       ),
     );
     const avail: Record<string, PricedRoomType> = {};
@@ -184,8 +193,9 @@ export function SearchPage() {
         roomTypeId: priced.roomTypeId,
         roomTypeName: priced.roomTypeName,
         plan,
+        stayType: o.stayType,
         checkIn: o.checkIn,
-        checkOut: o.checkOut,
+        checkOut: o.stayType === 'DAY_USE' ? o.checkIn : o.checkOut,
         adults: o.adults,
         children: o.children,
         childAges: o.childAges,
@@ -207,7 +217,7 @@ export function SearchPage() {
     try {
       const guestPayload = { name: guest.name, phone: guest.phone, email: guest.email, idType: guest.idType || undefined, idNumber: guest.idNumber || undefined };
       const res = await bookingApi.createGroupBooking(
-        cart.map((l) => ({ resortId: l.resortId, roomTypeId: l.roomTypeId, checkIn: l.checkIn, checkOut: l.checkOut, guests: l.adults + l.children, adults: l.adults, children: l.children, childAges: l.childAges.length ? l.childAges : undefined, extraBeds: l.extraBeds, plan: l.plan, guest: guestPayload })),
+        cart.map((l) => ({ resortId: l.resortId, roomTypeId: l.roomTypeId, checkIn: l.checkIn, checkOut: l.stayType === 'DAY_USE' ? undefined : l.checkOut, stayType: l.stayType, guests: l.adults + l.children, adults: l.adults, children: l.children, childAges: l.childAges.length ? l.childAges : undefined, extraBeds: l.extraBeds, plan: l.plan, guest: guestPayload })),
       );
       setResult(res);
       setCart([]);
@@ -250,14 +260,32 @@ export function SearchPage() {
         actions={<Link to={myBookingsPath}><Button variant="secondary">My Bookings</Button></Link>}
       />
 
+      {/* Stay type toggle */}
+      <div className="mb-3 inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+        {(['OVERNIGHT', 'DAY_USE'] as StayType[]).map((st) => (
+          <button
+            key={st}
+            type="button"
+            onClick={() => updateOcc({ stayType: st })}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${occ.stayType === st ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            {st === 'OVERNIGHT' ? 'Overnight stay' : 'Day use'}
+          </button>
+        ))}
+      </div>
+
       {/* Dates + occupancy (always visible) */}
       <div className="mb-3 rounded-xl border border-slate-200 bg-white p-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-7">
           <Field label="Destination">
             <Select value={destination} onChange={setDestination} options={[{ value: 'all', label: 'All destinations' }, ...destinations.map((x) => ({ value: x, label: x }))]} />
           </Field>
-          <Field label="Check-in"><Input id="search-checkin" type="date" min={today} max={maxCheckIn} value={occ.checkIn} onChange={(e) => updateOcc({ checkIn: e.target.value })} /></Field>
-          <Field label="Check-out"><Input type="date" min={occ.checkIn ? addDaysStr(occ.checkIn, 1) : addDaysStr(today, 1)} max={occ.checkIn ? addDaysStr(occ.checkIn, MAX_STAY_NIGHTS) : undefined} value={occ.checkOut} onChange={(e) => updateOcc({ checkOut: e.target.value })} /></Field>
+          <Field label={isDayUse ? 'Date' : 'Check-in'}><Input id="search-checkin" type="date" min={today} max={maxCheckIn} value={occ.checkIn} onChange={(e) => updateOcc({ checkIn: e.target.value })} /></Field>
+          {isDayUse ? (
+            <Field label="Duration"><div className="flex h-[38px] items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500">Same-day use</div></Field>
+          ) : (
+            <Field label="Check-out"><Input type="date" min={occ.checkIn ? addDaysStr(occ.checkIn, 1) : addDaysStr(today, 1)} max={occ.checkIn ? addDaysStr(occ.checkIn, MAX_STAY_NIGHTS) : undefined} value={occ.checkOut} onChange={(e) => updateOcc({ checkOut: e.target.value })} /></Field>
+          )}
           <Field label="Adults"><Input type="number" min={1} max={20} value={occ.adults} onChange={(e) => updateOcc({ adults: Number(e.target.value) })} /></Field>
           <Field label="Children"><Input type="number" min={0} max={20} value={occ.children} onChange={(e) => setChildren(Number(e.target.value))} /></Field>
           <Field label="Extra beds"><Input type="number" min={0} max={10} value={occ.extraBeds} onChange={(e) => updateOcc({ extraBeds: Number(e.target.value) })} /></Field>
@@ -282,7 +310,9 @@ export function SearchPage() {
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="w-full sm:w-72"><Input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search hotel or room…" /></div>
         <div className="text-xs text-slate-400">
-          {searched ? `${availableCount} of ${visibleRooms.length} rooms available · ${searched.occ.checkIn} → ${searched.occ.checkOut}` : `${visibleRooms.length} room type${visibleRooms.length === 1 ? '' : 's'} · pick dates to see availability`}
+          {searched
+            ? `${availableCount} of ${visibleRooms.length} rooms available · ${searched.occ.stayType === 'DAY_USE' ? `Day use · ${searched.occ.checkIn}` : `${searched.occ.checkIn} → ${searched.occ.checkOut}`}`
+            : `${visibleRooms.length} room type${visibleRooms.length === 1 ? '' : 's'} · pick dates to see availability`}
         </div>
       </div>
 
@@ -342,7 +372,7 @@ export function SearchPage() {
                         })}
                       </div>
                       <div className="mt-3 flex items-end justify-between">
-                        <div><div className="text-lg font-semibold text-slate-900">{inr(planPrice!.priceTotal)}</div><div className="text-[11px] text-slate-400">{inr(planPrice!.pricePerNight)}/night · {priced.nights} night{priced.nights === 1 ? '' : 's'}</div></div>
+                        <div><div className="text-lg font-semibold text-slate-900">{inr(planPrice!.priceTotal)}</div><div className="text-[11px] text-slate-400">{priced.nights === 0 ? 'Day use · same-day' : `${inr(planPrice!.pricePerNight)}/night · ${priced.nights} night${priced.nights === 1 ? '' : 's'}`}</div></div>
                         <Button variant={isLimitReached ? "secondary" : "primary"} disabled={isLimitReached} onClick={() => addRoom(r, priced)}>
                           {isLimitReached ? 'Max added' : '+ Add room'}
                         </Button>
@@ -425,7 +455,7 @@ export function SearchPage() {
                   <div key={l.key} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 p-2.5 text-sm">
                     <div>
                       <div className="font-medium text-slate-800">{l.resortName} · {l.roomTypeName}</div>
-                      <div className="text-xs text-slate-400">{PLAN_LABEL[l.plan]} · {l.checkIn} → {l.checkOut} · {l.adults + l.children} guest{l.adults + l.children === 1 ? '' : 's'}</div>
+                      <div className="text-xs text-slate-400">{l.stayType === 'DAY_USE' ? `Day use · ${l.checkIn}` : `${PLAN_LABEL[l.plan]} · ${l.checkIn} → ${l.checkOut}`} · {l.adults + l.children} guest{l.adults + l.children === 1 ? '' : 's'}</div>
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="font-medium text-slate-800">{inr(l.priceTotal)}</span>

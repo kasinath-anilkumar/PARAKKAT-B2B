@@ -11,6 +11,12 @@ export async function getAgencySummary(): Promise<AgencySummary> {
   return res.data;
 }
 
+/** Agent's own overview — booking metrics scoped to the signed-in agent. */
+export async function getAgentSummary(): Promise<AgencySummary> {
+  const res = await httpClient.get('/dashboard/agent');
+  return res.data;
+}
+
 export async function getBalance(): Promise<Balance> {
   const res = await httpClient.get('/finance/balance');
   return res.data;
