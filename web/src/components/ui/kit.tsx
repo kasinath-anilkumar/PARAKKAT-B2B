@@ -214,7 +214,7 @@ export function DataTable<T>({
 }) {
   const alignCls = (a?: 'right' | 'center') => (a === 'right' ? 'text-right' : a === 'center' ? 'text-center' : 'text-left');
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+    <div className="overflow-x-auto lg:overflow-visible rounded-xl border border-slate-200 bg-white">
       <table className="w-full min-w-[640px] text-sm">
         <thead>
           <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -234,7 +234,7 @@ export function DataTable<T>({
             </tr>
           )}
           {rows.map((row) => (
-            <tr key={rowKey(row)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
+            <tr key={rowKey(row)} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
               {columns.map((c, i) => (
                 <td key={i} className={`px-4 py-2.5 ${alignCls(c.align)} ${c.className ?? 'text-slate-600'}`}>
                   {c.render(row)}

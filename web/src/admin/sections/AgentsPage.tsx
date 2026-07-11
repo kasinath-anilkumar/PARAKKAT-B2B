@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { AppShell } from '../../components/layout/AppShell';
 import { Badge, Button, DataTable, Field, Input, Modal, PageHeader, SearchInput, Stat, Toggle, Toolbar, type Column } from '../../components/ui/kit';
+import { Icons } from '../../components/layout/icons';
 import { CountUp } from '../../components/ui/CountUp';
 import { SkeletonRows } from '../../components/ui/Skeleton';
 import * as agentsApi from '../../api/agents.api';
@@ -23,6 +24,7 @@ export function AgentsPage() {
   const [creating, setCreating] = useState(false);
   const [credential, setCredential] = useState<{ email: string; password: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['agents', 'all'] });
   const onErr = (e: unknown) => setError(extractError(e));
@@ -66,15 +68,80 @@ export function AgentsPage() {
       header: 'Actions',
       align: 'right',
       render: (a) => (
-        <div className="flex justify-end gap-1.5">
-          {a.status === 'ACTIVE' ? (
-            <Button variant="danger" disabled={busy} onClick={() => statusM.mutate({ id: a.id, status: 'SUSPENDED' })}>Disable</Button>
-          ) : (
-            <Button variant="secondary" disabled={busy} onClick={() => statusM.mutate({ id: a.id, status: 'ACTIVE' })}>Activate</Button>
+        <div className="relative flex justify-end">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveMenuId(activeMenuId === a.id ? null : a.id);
+            }}
+            className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+          >
+            <Icons.dots className="h-4 w-4" />
+          </button>
+          {activeMenuId === a.id && (
+            <div className="absolute right-0 top-full mt-1 w-40 rounded-xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-950 p-1.5 shadow-xl z-50 animate-pop-in space-y-0.5">
+              {a.status === 'ACTIVE' ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setActiveMenuId(null);
+                    statusM.mutate({ id: a.id, status: 'SUSPENDED' });
+                  }}
+                  className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-lg transition-colors"
+                >
+                  Disable
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setActiveMenuId(null);
+                    statusM.mutate({ id: a.id, status: 'ACTIVE' });
+                  }}
+                  className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/20 rounded-lg transition-colors"
+                >
+                  Activate
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setActiveMenuId(null);
+                  resetM.mutate(a);
+                }}
+                className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-lg transition-colors"
+              >
+                Reset pwd
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setActiveMenuId(null);
+                  logoutM.mutate(a.id);
+                }}
+                className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-lg transition-colors"
+              >
+                Force logout
+              </button>
+              <div className="border-t border-slate-100 dark:border-slate-900 my-1" />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setActiveMenuId(null);
+                  if (confirm(`Delete ${a.email}?`)) deleteM.mutate(a.id);
+                }}
+                className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-lg transition-colors"
+              >
+                Delete
+              </button>
+            </div>
           )}
-          <Button variant="ghost" disabled={busy} onClick={() => resetM.mutate(a)}>Reset pwd</Button>
-          <Button variant="ghost" disabled={busy} onClick={() => logoutM.mutate(a.id)}>Force logout</Button>
-          <Button variant="ghost" disabled={busy} onClick={() => { if (confirm(`Delete ${a.email}?`)) deleteM.mutate(a.id); }}>Delete</Button>
         </div>
       ),
     },
@@ -82,6 +149,9 @@ export function AgentsPage() {
 
   return (
     <AppShell>
+      {activeMenuId && (
+        <div className="fixed inset-0 z-40 cursor-default" onClick={() => setActiveMenuId(null)} />
+      )}
       <PageHeader
         title="Agent Management"
         subtitle="All agents across every agency — create, disable, reset credentials and force logout."

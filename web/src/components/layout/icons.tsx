@@ -147,6 +147,13 @@ export const Icons = {
       <path d="m16 17 5-5-5-5M21 12H9" />
     </Svg>
   ),
+  dots: (p: IconProps) => (
+    <Svg className={p.className}>
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none" />
+    </Svg>
+  ),
 };
 
 export type IconName = keyof typeof Icons;

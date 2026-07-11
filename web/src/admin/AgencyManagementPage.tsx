@@ -27,15 +27,15 @@ export function AgencyManagementPage() {
   return (
     <AppShell title="Agency Management">
       {showCreate && (
-        <div className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-2">
-            <h3 className="font-semibold text-slate-800 text-base">Create New Agency</h3>
+        <div className="mb-6 rounded-2xl border border-slate-200/50 bg-white/80 dark:border-slate-800/40 dark:bg-slate-900/30 p-5 shadow-xs">
+          <div className="mb-4 flex items-center justify-between border-b border-slate-100 dark:border-slate-800/50 pb-2.5">
+            <h3 className="font-bold text-slate-800 dark:text-white text-base">Create New Agency</h3>
             <button
               onClick={() => {
                 setShowCreate(false);
                 setParams(tab === 'agencies' ? {} : { tab });
               }}
-              className="text-sm text-slate-505 hover:text-slate-700 hover:underline"
+              className="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-350 transition-colors font-medium"
             >
               ✕ Close section
             </button>
@@ -50,21 +50,21 @@ export function AgencyManagementPage() {
         </div>
       )}
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex rounded-lg bg-slate-100 p-0.5 text-sm">
-          <button onClick={() => setTab('agencies')} className={`rounded-md px-3 py-1.5 ${tab === 'agencies' ? 'bg-white font-medium text-slate-800 shadow-sm' : 'text-slate-500'}`}>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex rounded-xl bg-slate-100 dark:bg-slate-900/60 border border-slate-200/40 dark:border-slate-800/40 p-0.5 text-sm">
+          <button onClick={() => setTab('agencies')} className={`rounded-lg px-4 py-2 transition-all ${tab === 'agencies' ? 'bg-white dark:bg-slate-800 font-bold text-slate-800 dark:text-white shadow-xs' : 'text-slate-550 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300'}`}>
             Agencies
           </button>
-          <button onClick={() => setTab('pending')} className={`rounded-md px-3 py-1.5 ${tab === 'pending' ? 'bg-white font-medium text-slate-800 shadow-sm' : 'text-slate-500'}`}>
+          <button onClick={() => setTab('pending')} className={`rounded-lg px-4 py-2 transition-all ${tab === 'pending' ? 'bg-white dark:bg-slate-800 font-bold text-slate-800 dark:text-white shadow-xs' : 'text-slate-550 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300'}`}>
             Pending Registrations
           </button>
         </div>
-        <button onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700">
+        <button onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-bold text-white shadow-xs active:scale-95 transition-all">
           <Icons.agencies className="h-4 w-4" /> Create Agency
         </button>
       </div>
 
-      {error && <p className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="mb-3 rounded-lg bg-red-50 dark:bg-red-950/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">{error}</p>}
 
       {tab === 'agencies' ? <AgenciesTab onError={setError} /> : <PendingTab onError={setError} />}
     </AppShell>
@@ -72,8 +72,10 @@ export function AgencyManagementPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const cls = status === 'ACTIVE' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
-  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${cls}`}>{status}</span>;
+  const cls = status === 'ACTIVE'
+    ? 'bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-400'
+    : 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400';
+  return <span className={`rounded-lg px-2.5 py-0.5 text-xs font-semibold ${cls}`}>{status}</span>;
 }
 
 function extractError(err: unknown): string {
@@ -88,8 +90,17 @@ function AgenciesTab({ onError }: { onError: (m: string | null) => void }) {
   const { data, isLoading } = useQuery({ queryKey: ['agencies'], queryFn: adminApi.listAgencies });
   const [confirmDelete, setConfirmDelete] = useState<Agency | null>(null);
   const [editingCommercial, setEditingCommercial] = useState<Agency | null>(null);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
-  const [search, setSearch] = useState('');
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(searchParams.get('search') ?? '');
+
+  useEffect(() => {
+    const q = searchParams.get('search');
+    if (q != null) {
+      setSearch(q);
+    }
+  }, [searchParams]);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
 
@@ -117,19 +128,22 @@ function AgenciesTab({ onError }: { onError: (m: string | null) => void }) {
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      {activeMenuId && (
+        <div className="fixed inset-0 z-40 cursor-default" onClick={() => setActiveMenuId(null)} />
+      )}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[200px]">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search name, GSTIN, email, phone…"
-            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm placeholder:text-slate-400 focus:border-blue-400 focus:outline-none"
+            className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 focus:outline-none transition-all"
           />
         </div>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
+          className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition-all"
         >
           <option value="all">All statuses</option>
           <option value="ACTIVE">Active</option>
@@ -138,7 +152,7 @@ function AgenciesTab({ onError }: { onError: (m: string | null) => void }) {
         <select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
+          className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition-all"
         >
           <option value="all">All types</option>
           <option value="standard">Standard</option>
@@ -151,7 +165,7 @@ function AgenciesTab({ onError }: { onError: (m: string | null) => void }) {
               setStatusFilter('all');
               setTypeFilter('all');
             }}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50"
+            className="rounded-lg border border-slate-200 dark:border-slate-800 px-3.5 py-2 text-sm text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
           >
             Clear
           </button>
@@ -164,47 +178,98 @@ function AgenciesTab({ onError }: { onError: (m: string | null) => void }) {
         </p>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <div className="overflow-x-auto lg:overflow-visible rounded-xl border border-slate-200/50 bg-white dark:border-slate-800/40 dark:bg-slate-900/30 shadow-xs">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
-            <th className="px-4 py-2">Agency</th>
-            <th className="px-4 py-2">GSTIN</th>
-            <th className="px-4 py-2">Contact</th>
-            <th className="px-4 py-2">Status</th>
-            <th className="px-4 py-2 text-right">Actions</th>
+          <tr className="border-b border-slate-200 dark:border-slate-800 text-left text-xs uppercase tracking-wider text-slate-405 dark:text-slate-500">
+            <th className="px-4 py-3">Agency</th>
+            <th className="px-4 py-3">GSTIN</th>
+            <th className="px-4 py-3">Contact</th>
+            <th className="px-4 py-3">Status</th>
+            <th className="px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
           {isLoading && <SkeletonRows rows={6} cols={5} />}
           {filtered.map((a) => (
-            <tr key={a.id} className="border-b border-slate-100">
-              <td className="px-4 py-2 font-medium text-slate-800">
+            <tr key={a.id} className="border-b border-slate-100 dark:border-slate-800/20 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 transition-colors">
+              <td className="px-4 py-3 font-semibold text-slate-800 dark:text-slate-200">
                 <div className="flex items-center gap-2">
-                  <Link to={`/admin/agencies/${a.id}`} className="text-blue-700 hover:underline">
+                  <Link to={`/admin/agencies/${a.id}`} className="text-blue-600 dark:text-blue-400 font-bold hover:underline">
                     {a.legalName}
                   </Link>
                   {a.isIndependent && (
-                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider">
+                    <span className="rounded-lg bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 text-[9px] font-extrabold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
                       Independent
                     </span>
                   )}
                 </div>
               </td>
-              <td className="px-4 py-2 font-mono text-xs text-slate-500">
-                {a.isIndependent ? <span className="text-slate-400 font-sans italic">N/A (Aadhaar Only)</span> : a.gstin}
+              <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">
+                {a.isIndependent ? <span className="text-slate-400 dark:text-slate-500 font-sans italic">N/A (Aadhaar Only)</span> : a.gstin}
               </td>
-              <td className="px-4 py-2 text-slate-500">{a.contactEmail}</td>
-              <td className="px-4 py-2"><StatusBadge status={a.status} /></td>
-              <td className="px-4 py-2">
-                <div className="flex justify-end gap-1.5">
-                  <button onClick={() => setEditingCommercial(a)} className="rounded border border-slate-200 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50">Commercials</button>
-                  {a.status === 'ACTIVE' ? (
-                    <button onClick={() => run(() => adminApi.suspendAgency(a.id))} className="rounded border border-slate-200 px-2 py-1 text-xs text-amber-700 hover:bg-amber-50">Suspend</button>
-                  ) : (
-                    <button onClick={() => run(() => adminApi.reactivateAgency(a.id))} className="rounded border border-slate-200 px-2 py-1 text-xs text-green-700 hover:bg-green-50">Activate</button>
+              <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{a.contactEmail}</td>
+              <td className="px-4 py-3"><StatusBadge status={a.status} /></td>
+              <td className="px-4 py-3">
+                <div className="relative flex justify-end">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveMenuId(activeMenuId === a.id ? null : a.id);
+                    }}
+                    className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+                  >
+                    <Icons.dots className="h-4 w-4" />
+                  </button>
+                  {activeMenuId === a.id && (
+                    <div className="absolute right-0 top-full mt-1 w-40 rounded-xl border border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-950 p-1.5 shadow-xl z-50 animate-pop-in space-y-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveMenuId(null);
+                          setEditingCommercial(a);
+                        }}
+                        className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-900 rounded-lg transition-colors"
+                      >
+                        Commercials
+                      </button>
+                      {a.status === 'ACTIVE' ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveMenuId(null);
+                            run(() => adminApi.suspendAgency(a.id));
+                          }}
+                          className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/20 rounded-lg transition-colors"
+                        >
+                          Suspend
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveMenuId(null);
+                            run(() => adminApi.reactivateAgency(a.id));
+                          }}
+                          className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/20 rounded-lg transition-colors"
+                        >
+                          Activate
+                        </button>
+                      )}
+                      <div className="border-t border-slate-100 dark:border-slate-900 my-1" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveMenuId(null);
+                          setConfirmDelete(a);
+                        }}
+                        className="w-full text-left px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded-lg transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   )}
-                  <button onClick={() => setConfirmDelete(a)} className="rounded border border-slate-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50">Delete</button>
                 </div>
               </td>
             </tr>
@@ -222,18 +287,18 @@ function AgenciesTab({ onError }: { onError: (m: string | null) => void }) {
 
       {confirmDelete && (
         <Modal title="Delete agency" onClose={() => setConfirmDelete(null)}>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-slate-600 dark:text-slate-350">
             Delete <strong>{confirmDelete.legalName}</strong>? This is only allowed if the agency has no bookings,
             invoices, or payments. This cannot be undone.
           </p>
-          <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => setConfirmDelete(null)} className="rounded border border-slate-200 px-3 py-1.5 text-sm">Cancel</button>
+          <div className="mt-5 flex justify-end gap-2.5">
+            <button onClick={() => setConfirmDelete(null)} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Cancel</button>
             <button
               onClick={() => {
                 run(() => adminApi.deleteAgency(confirmDelete.id));
                 setConfirmDelete(null);
               }}
-              className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white"
+              className="rounded-lg bg-red-600 hover:bg-red-700 px-4 py-2 text-sm font-bold text-white shadow-xs active:scale-95 transition-all"
             >
               Delete
             </button>
@@ -269,44 +334,44 @@ function PendingTab({ onError }: { onError: (m: string | null) => void }) {
   };
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+    <div className="overflow-x-auto rounded-xl border border-slate-200/50 bg-white dark:border-slate-800/40 dark:bg-slate-900/30 shadow-xs">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs uppercase text-slate-400">
-            <th className="px-4 py-2">Agency</th>
-            <th className="px-4 py-2">GSTIN</th>
-            <th className="px-4 py-2">Submitted</th>
-            <th className="px-4 py-2 text-right">Actions</th>
+          <tr className="border-b border-slate-200 dark:border-slate-800 text-left text-xs uppercase tracking-wider text-slate-405 dark:text-slate-500">
+            <th className="px-4 py-3">Agency</th>
+            <th className="px-4 py-3">GSTIN</th>
+            <th className="px-4 py-3">Submitted</th>
+            <th className="px-4 py-3 text-right">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
           {isLoading && <SkeletonRows rows={5} cols={4} />}
           {data?.items.map((app) => (
-            <tr key={app.id} className="border-b border-slate-100">
-              <td className="px-4 py-2 font-medium text-slate-800">
+            <tr key={app.id} className="border-b border-slate-100 dark:border-slate-800/20 hover:bg-slate-50/50 dark:hover:bg-slate-900/10 transition-colors">
+              <td className="px-4 py-3 font-semibold text-slate-800 dark:text-slate-200">
                 <div className="flex items-center gap-2">
                   <span>{app.legalName ?? '—'}</span>
                   {app.isIndependent && (
-                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-600 uppercase tracking-wider">
+                    <span className="rounded-lg bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 text-[9px] font-extrabold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
                       Independent
                     </span>
                   )}
                 </div>
               </td>
-              <td className="px-4 py-2 font-mono text-xs text-slate-500">
-                {app.isIndependent ? <span className="text-slate-400 font-sans italic">N/A (Aadhaar Only)</span> : (app.gstin ?? '—')}
+              <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">
+                {app.isIndependent ? <span className="text-slate-400 dark:text-slate-500 font-sans italic">N/A (Aadhaar Only)</span> : (app.gstin ?? '—')}
               </td>
-              <td className="px-4 py-2 text-slate-500">{app.submittedAt ? new Date(app.submittedAt).toLocaleDateString() : '—'}</td>
-              <td className="px-4 py-2">
+              <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{app.submittedAt ? new Date(app.submittedAt).toLocaleDateString() : '—'}</td>
+              <td className="px-4 py-3">
                 <div className="flex justify-end gap-1.5">
-                  <Link to={`/admin/applications/${app.id}`} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">Open</Link>
-                  <button onClick={() => run(() => adminApi.approve(app.id))} className="rounded border border-slate-200 px-2 py-1 text-xs text-green-700 hover:bg-green-50">Approve</button>
-                  <button onClick={() => { setRejectId(app.id); setReason(''); }} className="rounded border border-slate-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50">Reject</button>
+                  <Link to={`/admin/applications/${app.id}`} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors">Open</Link>
+                  <button onClick={() => run(() => adminApi.approve(app.id))} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-2.5 py-1 text-xs font-semibold text-green-600 dark:text-green-400 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors">Approve</button>
+                  <button onClick={() => { setRejectId(app.id); setReason(''); }} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-2.5 py-1 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors">Reject</button>
                 </div>
               </td>
             </tr>
           ))}
-          {data?.items.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-400">No pending registrations.</td></tr>}
+          {data?.items.length === 0 && <tr><td colSpan={4} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">No pending registrations.</td></tr>}
         </tbody>
       </table>
 
@@ -317,17 +382,17 @@ function PendingTab({ onError }: { onError: (m: string | null) => void }) {
             onChange={(e) => setReason(e.target.value)}
             placeholder="Reason for rejection (required)"
             rows={3}
-            className="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+            className="w-full rounded-lg border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
           />
-          <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => setRejectId(null)} className="rounded border border-slate-200 px-3 py-1.5 text-sm">Cancel</button>
+          <div className="mt-5 flex justify-end gap-2.5">
+            <button onClick={() => setRejectId(null)} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Cancel</button>
             <button
               disabled={reason.trim().length < 3}
               onClick={() => {
                 run(() => adminApi.reject(rejectId, reason.trim()));
                 setRejectId(null);
               }}
-              className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-lg bg-red-600 hover:bg-red-700 px-4 py-2 text-sm font-bold text-white shadow-xs active:scale-95 transition-all disabled:opacity-50"
             >
               Reject
             </button>
@@ -393,34 +458,34 @@ function CreateAgencyForm({ onClose, onError }: { onClose: () => void; onError: 
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <label className="col-span-full flex items-center gap-2.5 mb-2 text-sm font-semibold text-slate-700 cursor-pointer">
+        <label className="col-span-full flex items-center gap-2.5 mb-2.5 text-sm font-semibold text-slate-700 dark:text-slate-300 cursor-pointer select-none">
           <input
             type="checkbox"
             checked={isIndependent}
             onChange={(e) => setIsIndependent(e.target.checked)}
-            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+            className="rounded border-slate-300 dark:border-slate-800 text-blue-600 focus:ring-blue-500 h-4 w-4 bg-white dark:bg-slate-950"
           />
           <span>Register as an Independent Agent (Aadhaar verification only, no GST required)</span>
         </label>
 
         {fields.map((f) => (
-          <label key={f.key} className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">{f.label}</span>
+          <label key={f.key} className="block text-sm space-y-1.5">
+            <span className="font-semibold text-slate-700 dark:text-slate-300">{f.label}</span>
             <input
               value={form[f.key] ?? ''}
               placeholder={f.placeholder}
               onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
               required
-              className="w-full rounded border border-slate-300 px-3 py-2"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
             />
           </label>
         ))}
-        <label className="block text-sm">
-          <span className="mb-1 block font-medium text-slate-700">Commercial Tier</span>
+        <label className="block text-sm space-y-1.5">
+          <span className="font-semibold text-slate-700 dark:text-slate-300">Commercial Tier</span>
           <select
             value={form.tier}
             onChange={(e) => setForm({ ...form, tier: e.target.value })}
-            className="w-full rounded border border-slate-300 bg-white px-3 py-2"
+            className="w-full rounded-lg border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-blue-500"
             required
           >
             {tiers && Object.keys(tiers).map((t) => (
@@ -431,28 +496,28 @@ function CreateAgencyForm({ onClose, onError }: { onClose: () => void; onError: 
             {!tiers && <option value="A">A</option>}
           </select>
         </label>
-        <label className="block text-sm">
-          <span className="mb-1 block font-medium text-slate-700 font-semibold">GST Registration Proof</span>
+        <label className="block text-sm space-y-1.5">
+          <span className="font-semibold text-slate-700 dark:text-slate-300">GST Registration Proof</span>
           <input
             type="file"
             accept="application/pdf,image/jpeg,image/png"
             onChange={(e) => setRegistrationProof(e.target.files?.[0] || null)}
-            className="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+            className="w-full text-xs text-slate-500 dark:text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-100 dark:file:bg-slate-800 file:text-slate-700 dark:file:text-slate-300 hover:file:bg-slate-200 dark:hover:file:bg-slate-700 transition-all cursor-pointer"
           />
         </label>
-        <label className="block text-sm">
-          <span className="mb-1 block font-medium text-slate-700 font-semibold">Address Proof</span>
+        <label className="block text-sm space-y-1.5">
+          <span className="font-semibold text-slate-700 dark:text-slate-300">Address Proof</span>
           <input
             type="file"
             accept="application/pdf,image/jpeg,image/png"
             onChange={(e) => setAddressProof(e.target.files?.[0] || null)}
-            className="w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+            className="w-full text-xs text-slate-500 dark:text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-100 dark:file:bg-slate-800 file:text-slate-700 dark:file:text-slate-300 hover:file:bg-slate-200 dark:hover:file:bg-slate-700 transition-all cursor-pointer"
           />
         </label>
       </div>
-      <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-        <button type="button" onClick={onClose} className="rounded border border-slate-200 px-3 py-1.5 text-sm bg-white">Cancel</button>
-        <button type="submit" disabled={mutation.isPending} className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 hover:bg-blue-700">
+      <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800/40">
+        <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-750 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Cancel</button>
+        <button type="submit" disabled={mutation.isPending} className="rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-bold text-white shadow-xs active:scale-95 transition-all disabled:opacity-50">
           {mutation.isPending ? 'Creating…' : 'Create agency'}
         </button>
       </div>
@@ -463,9 +528,9 @@ function CreateAgencyForm({ onClose, onError }: { onClose: () => void; onError: 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
-        <h3 className="mb-3 text-sm font-semibold text-slate-800">{title}</h3>
+      <div className="absolute inset-0 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-xs" onClick={onClose} />
+      <div className="relative w-full max-w-md rounded-2xl border border-slate-200/50 dark:border-slate-800/40 bg-white dark:bg-slate-950 p-6 shadow-xl">
+        <h3 className="mb-4 text-sm font-bold text-slate-850 dark:text-white">{title}</h3>
         {children}
       </div>
     </div>
@@ -517,31 +582,31 @@ function ManageCommercialModal({
   return (
     <Modal title="Manage Agency Commercials" onClose={onClose}>
       {isLoading ? (
-        <p className="text-sm text-slate-500 py-4 text-center">Loading configurations...</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">Loading configurations...</p>
       ) : (
         <form onSubmit={submit} className="space-y-4">
           <div>
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Agency</p>
-            <p className="text-sm font-medium text-slate-800">{agency.legalName}</p>
+            <p className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Agency</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 mt-0.5">{agency.legalName}</p>
           </div>
 
           {currentTier && (
-            <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600 space-y-1.5">
-              <p className="font-semibold text-slate-700 text-sm mb-1.5 border-b border-slate-200/60 pb-1">Current Configuration</p>
-              <p className="flex justify-between"><span>Tier:</span> <span className="font-semibold text-slate-800">{currentTier.tier}</span></p>
-              <p className="flex justify-between"><span>Payment Mode:</span> <span className="font-semibold text-slate-800">{currentTier.paymentMode}</span></p>
-              <p className="flex justify-between"><span>Credit Limit:</span> <span className="font-semibold text-slate-800">₹{Number(currentTier.creditLimit).toLocaleString()}</span></p>
-              <p className="flex justify-between"><span>Payment Terms:</span> <span className="font-semibold text-slate-800">{formatPaymentTerms(currentTier.paymentTerms)}</span></p>
-              <p className="flex justify-between"><span>Markup:</span> <span className="font-semibold text-slate-800">{currentTier.markupPct}%</span></p>
+            <div className="rounded-xl bg-slate-50/50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-800/65 p-3.5 text-xs text-slate-600 dark:text-slate-400 space-y-2">
+              <p className="font-bold text-slate-750 dark:text-slate-200 text-sm mb-2 border-b border-slate-200/60 dark:border-slate-800/60 pb-1">Current Configuration</p>
+              <p className="flex justify-between"><span>Tier:</span> <span className="font-semibold text-slate-800 dark:text-white">{currentTier.tier}</span></p>
+              <p className="flex justify-between"><span>Payment Mode:</span> <span className="font-semibold text-slate-800 dark:text-white">{currentTier.paymentMode}</span></p>
+              <p className="flex justify-between"><span>Credit Limit:</span> <span className="font-semibold text-slate-800 dark:text-white">₹{Number(currentTier.creditLimit).toLocaleString()}</span></p>
+              <p className="flex justify-between"><span>Payment Terms:</span> <span className="font-semibold text-slate-800 dark:text-white">{formatPaymentTerms(currentTier.paymentTerms)}</span></p>
+              <p className="flex justify-between"><span>Markup:</span> <span className="font-semibold text-slate-800 dark:text-white">{currentTier.markupPct}%</span></p>
             </div>
           )}
 
-          <label className="block text-sm">
-            <span className="mb-1 block font-medium text-slate-700">Select New Tier</span>
+          <label className="block text-sm space-y-1.5">
+            <span className="font-semibold text-slate-700 dark:text-slate-350">Select New Tier</span>
             <select
               value={selectedTier}
               onChange={(e) => setSelectedTier(e.target.value)}
-              className="w-full rounded border border-slate-300 bg-white px-3 py-2"
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition-all"
               required
             >
               {tiers && Object.keys(tiers).map((t) => (
@@ -553,9 +618,9 @@ function ManageCommercialModal({
             </select>
           </label>
 
-          <div className="flex justify-end gap-2 pt-1 border-t border-slate-100 mt-4">
-            <button type="button" onClick={onClose} className="rounded border border-slate-200 px-3 py-1.5 text-sm">Cancel</button>
-            <button type="submit" disabled={mutation.isPending} className="rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+          <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800/40 mt-4">
+            <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-sm font-semibold text-slate-750 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Cancel</button>
+            <button type="submit" disabled={mutation.isPending} className="rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-sm font-bold text-white shadow-xs active:scale-95 transition-all disabled:opacity-50">
               {mutation.isPending ? 'Updating…' : 'Update Commercials'}
             </button>
           </div>

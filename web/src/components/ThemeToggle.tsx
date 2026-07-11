@@ -1,4 +1,5 @@
 import { useThemeStore } from '../store/themeStore';
+import { FiSun, FiMoon } from 'react-icons/fi';
 
 // Some browsers ship the View Transitions API without types yet.
 type DocumentWithVT = Document & {
@@ -61,40 +62,20 @@ export function ThemeToggle() {
       title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
     >
       {/* Sun / moon icons cross-fade + rotate as the theme flips. */}
-      <svg
-        className={`absolute h-4.5 w-4.5 transition-all duration-500 ${
+      <FiMoon
+        className={`absolute h-[18px] w-[18px] transition-all duration-500 ${
           isDark
             ? 'rotate-0 scale-100 opacity-100'
             : '-rotate-90 scale-0 opacity-0'
         }`}
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        strokeWidth={2}
-      >
-        {/* Moon */}
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
-        />
-      </svg>
-      <svg
-        className={`absolute h-4.5 w-4.5 transition-all duration-500 ${
+      />
+      <FiSun
+        className={`absolute h-[18px] w-[18px] transition-all duration-500 ${
           isDark
             ? 'rotate-90 scale-0 opacity-0'
             : 'rotate-0 scale-100 opacity-100'
         }`}
-        fill="currentColor"
-        viewBox="0 0 24 24"
-      >
-        {/* Sun */}
-        <path
-          fillRule="evenodd"
-          d="M12 2.25a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V3a.75.75 0 01.75-.75zM7.5 12a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM18.894 6.166a.75.75 0 00-1.06-1.06l-1.061 1.06a.75.75 0 001.06 1.06l1.06-1.06zM21.75 12a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5H21a.75.75 0 01.75.75zM17.834 18.894a.75.75 0 001.06-1.06l-1.06-1.061a.75.75 0 10-1.06 1.06l1.06 1.06zM12 18a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0112 18zM7.758 17.303a.75.75 0 00-1.061-1.06l-1.06 1.06a.75.75 0 001.06 1.06l1.06-1.06zM6 12a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5H5.25A.75.75 0 016 12zM6.697 7.757a.75.75 0 001.06-1.06l-1.06-1.06a.75.75 0 00-1.06 1.06l1.06 1.06z"
-          clipRule="evenodd"
-        />
-      </svg>
+      />
     </button>
   );
 }
