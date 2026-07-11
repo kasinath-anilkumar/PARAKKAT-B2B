@@ -48,7 +48,8 @@ export function BookingsPage() {
       {isLoading && <SkeletonTable rows={6} cols={5} />}
 
       {data && (
-        <table className="w-full border-collapse text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="py-2">Resort / Room</th>
@@ -106,6 +107,7 @@ export function BookingsPage() {
             )}
           </tbody>
         </table>
+        </div>
       )}
     </AppShell>
   );

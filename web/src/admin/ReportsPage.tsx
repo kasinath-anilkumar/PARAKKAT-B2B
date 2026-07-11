@@ -101,7 +101,8 @@ function ReportTable({ title, head, rows }: { title: string; head: string[]; row
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5">
       <h2 className="mb-3 text-sm font-semibold text-slate-700">{title}</h2>
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[420px] text-sm">
         <thead>
           <tr className="text-left text-xs uppercase text-slate-400">
             {head.map((h, i) => (
@@ -122,6 +123,7 @@ function ReportTable({ title, head, rows }: { title: string; head: string[]; row
           )}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

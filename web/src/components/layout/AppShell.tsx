@@ -291,8 +291,9 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
         </div>
       )}
 
-      {/* Main column */}
-      <div className={`flex min-h-screen flex-1 flex-col transition-all ${collapsed ? 'lg:ml-16' : 'lg:ml-60'}`}>
+      {/* Main column — min-w-0 lets wide children (tables, etc.) scroll
+          within their own overflow container instead of widening the page. */}
+      <div className={`flex min-h-screen min-w-0 flex-1 flex-col transition-all ${collapsed ? 'lg:ml-16' : 'lg:ml-60'}`}>
         <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-slate-200 bg-white/90 dark:border-slate-800 dark:bg-slate-950/90 px-4 py-2.5 backdrop-blur">
           <button className="text-slate-500 dark:text-slate-400 lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Menu">
             <Icons.menu className="h-5 w-5" />

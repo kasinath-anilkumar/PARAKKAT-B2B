@@ -44,7 +44,8 @@ export function ApplicationsQueue() {
       {isError && <p className="text-sm text-red-600">Failed to load applications.</p>}
 
       {data && (
-        <table className="w-full border-collapse text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[520px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="py-2">Legal name</th>
@@ -81,6 +82,7 @@ export function ApplicationsQueue() {
             )}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

@@ -178,7 +178,8 @@ export function AdminDashboard() {
           {/* Row 2: top agencies + payment overview + system status */}
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-4">
             <Card title="Top Performing Agencies" className="xl:col-span-2" action={<Link to="/reports" className="text-xs text-blue-600">View All</Link>}>
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[440px] text-sm">
                 <thead>
                   <tr className="text-left text-[11px] uppercase text-slate-400">
                     <th className="pb-1.5">Agency</th>
@@ -201,6 +202,7 @@ export function AdminDashboard() {
                   )}
                 </tbody>
               </table>
+              </div>
             </Card>
 
             <Card title="Payment Overview">
